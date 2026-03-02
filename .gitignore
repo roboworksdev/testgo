@@ -9,3 +9,7 @@ __pycache__/
 build/
 install/
 log/
+.k1_rviz_resolved.urdf
+.real_robot_view_generated.rviz
+.mujoco_launch.log
+.gazebo_launch.log

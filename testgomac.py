@@ -658,6 +658,39 @@ class CondaInstallWorker(QThread):
 
 
 
+class MuJoCoInstallWorker(QThread):
+    """Runs pip install mujoco inside the ros_env conda environment."""
+    output   = pyqtSignal(str)
+    finished = pyqtSignal(bool)
+
+    def __init__(self, python_exe):
+        super().__init__()
+        self.python_exe = python_exe
+
+    def run(self):
+        self.output.emit("Installing MuJoCo — please wait...")
+        try:
+            proc = subprocess.Popen(
+                [self.python_exe, "-m", "pip", "install", "mujoco"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+            for line in proc.stdout:
+                self.output.emit(line.rstrip())
+            proc.wait()
+            if proc.returncode == 0:
+                self.output.emit("\nMuJoCo installed successfully.")
+                self.finished.emit(True)
+            else:
+                self.output.emit(f"\npip install failed (exit {proc.returncode}).")
+                self.finished.emit(False)
+        except Exception as e:
+            self.output.emit(f"Install error: {e}")
+            self.finished.emit(False)
+
+
 def _draw_send_icon(size=44):
     """White upward-arrow inside a white circle on transparent background."""
     scale = 2
@@ -3157,14 +3190,14 @@ class RobotControlApp(QMainWindow):
         self.rviz_btn.clicked.connect(self._launch_rviz)
         header_row.addWidget(self.rviz_btn)
 
-        self.gazebo_btn = QPushButton("Gazebo")
+        self.gazebo_btn = QPushButton("MuJoCo")
         self.gazebo_btn.setFixedWidth(90)
         self.gazebo_btn.setStyleSheet(
-            "background-color: #FF9500; color: white; padding: 8px; "
+            "background-color: #34C759; color: white; padding: 8px; "
             "border-radius: 8px; font-weight: bold;"
         )
-        self.gazebo_btn.setToolTip("Launch Gazebo simulation with robot model")
-        self.gazebo_btn.clicked.connect(self._launch_gazebo)
+        self.gazebo_btn.setToolTip("Launch MuJoCo simulation with K1 robot model")
+        self.gazebo_btn.clicked.connect(self._launch_mujoco)
         header_row.addWidget(self.gazebo_btn)
 
         main_layout.addLayout(header_row)
@@ -4965,6 +4998,20 @@ class RobotControlApp(QMainWindow):
             click_handler=self._launch_robosim,
         )
         self._roboapps_icons_layout.addWidget(robosim_widget)
+
+        # MuJoCo app icon
+        mujoco_widget, _ = self._make_app_icon_widget(
+            symbol="M",
+            label_text="MuJoCo",
+            bg_color="#34C759",
+            hover_color="#248A3D",
+            pressed_color="#1A6B2F",
+            text_color="white",
+            tooltip="Install MuJoCo physics simulator",
+            click_handler=self._on_mujoco_icon_clicked,
+        )
+        self._roboapps_icons_layout.addWidget(mujoco_widget)
+
         self._roboapps_icons_layout.addStretch()
 
         main_area_layout.addWidget(icons_container)
@@ -5298,6 +5345,99 @@ class RobotControlApp(QMainWindow):
         dlg.exec()
         if dlg.clickedButton() == go_btn:
             self.tabs.setCurrentIndex(0)
+
+    def _show_mujoco_not_installed_dialog(self):
+        """Show a dialog directing the user to install MuJoCo via the RoboApps icon."""
+        dlg = QMessageBox(self)
+        dlg.setWindowTitle("MuJoCo Not Installed")
+        dlg.setText(
+            "MuJoCo is not installed in your conda environment.\n\n"
+            "To install it:\n"
+            "  1. Click  Go to RoboApps  below\n"
+            "  2. Click the  MuJoCo  app icon\n\n"
+            "Then click the MuJoCo button again to launch the simulation."
+        )
+        go_btn = dlg.addButton("Go to RoboApps", QMessageBox.ButtonRole.AcceptRole)
+        dlg.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+        dlg.exec()
+        if dlg.clickedButton() == go_btn:
+            self.tabs.setCurrentIndex(3)   # RoboApps is tab index 3
+
+    def _on_mujoco_icon_clicked(self):
+        """Check if MuJoCo is installed; if so, show version — otherwise run install."""
+        conda_prefix, _ = self._find_conda_env()
+        if conda_prefix:
+            python_exe = os.path.join(conda_prefix, "bin", "python3")
+            if not os.path.isfile(python_exe):
+                python_exe = "python3"
+        else:
+            python_exe = "python3"
+
+        try:
+            check = subprocess.run(
+                [python_exe, "-c", "import mujoco; print(mujoco.__version__)"],
+                capture_output=True, text=True, timeout=5,
+            )
+        except Exception:
+            check = None
+
+        if check and check.returncode == 0:
+            version = check.stdout.strip()
+            QMessageBox.information(
+                self, "MuJoCo",
+                f"MuJoCo {version} is already installed.\n\n"
+                "Click the MuJoCo button in the header to launch the simulation."
+            )
+            return
+
+        self._run_mujoco_install(python_exe)
+
+    def _run_mujoco_install(self, python_exe):
+        """Show a progress dialog while pip installs mujoco."""
+        progress = QDialog(self)
+        progress.setWindowTitle("Installing MuJoCo")
+        progress.setMinimumWidth(520)
+        prog_layout = QVBoxLayout(progress)
+
+        prog_label = QLabel("Installing MuJoCo — please wait...")
+        prog_layout.addWidget(prog_label)
+
+        prog_output = QPlainTextEdit()
+        prog_output.setReadOnly(True)
+        prog_output.setMinimumHeight(160)
+        _mono = QFont("Menlo")
+        _mono.setFixedPitch(True)
+        _mono.setPointSize(10)
+        prog_output.setFont(_mono)
+        prog_output.setStyleSheet("background:#1e1e1e; color:#d4d4d4;")
+        prog_layout.addWidget(prog_output)
+
+        close_btn = QPushButton("Close")
+        close_btn.setEnabled(False)
+        close_btn.clicked.connect(progress.accept)
+        prog_layout.addWidget(close_btn)
+
+        worker = MuJoCoInstallWorker(python_exe)
+
+        def _on_output(line):
+            prog_output.appendPlainText(line)
+            prog_output.verticalScrollBar().setValue(
+                prog_output.verticalScrollBar().maximum()
+            )
+
+        def _on_finished(success):
+            close_btn.setEnabled(True)
+            if success:
+                prog_label.setText(
+                    "MuJoCo installed. Click the MuJoCo button in the header to launch."
+                )
+            else:
+                prog_label.setText("Installation failed — see output above.")
+
+        worker.output.connect(_on_output)
+        worker.finished.connect(_on_finished)
+        worker.start()
+        progress.exec()
 
     def _launch_robosim(self):
         """Launch RoboSim5 as a subprocess: python RobotSim5.py"""
@@ -6936,14 +7076,25 @@ class RobotControlApp(QMainWindow):
         """Write a real-robot RViz config with an absolute path to our local URDF.
 
         Uses 'Description Source: File' instead of subscribing to /robot_description
-        so that:
-          - Our local STL meshes (already resolved via movement_pkg ament package) are
-            shown instead of missing Wheeltec mesh files.
-          - Two robot models don't appear when the robot runs multiple
-            robot_state_publisher instances (each publishing /robot_description).
+        so that the K1 STL meshes are found without a colcon install step.
         The robot's own /tf stream still drives all movement and positioning.
         """
-        urdf_path = os.path.join(_PKG_DIR, "K1_22dof.urdf")
+        # Patch the K1 URDF: resolve relative mesh paths to absolute file:// URIs
+        # so RViz2 can find the STL files regardless of working directory.
+        k1_urdf = os.path.join(_PKG_DIR, "K1_22dof.urdf")
+        patched_urdf_path = os.path.join(_PKG_DIR, ".k1_rviz_resolved.urdf")
+        try:
+            with open(k1_urdf, "r") as f:
+                urdf_content = f.read()
+            meshes_abs_uri = f"file://{_PKG_DIR}/meshes/"
+            urdf_content = urdf_content.replace("meshes/", meshes_abs_uri)
+            with open(patched_urdf_path, "w") as f:
+                f.write(urdf_content)
+            urdf_path = patched_urdf_path
+        except Exception as e:
+            self._log(f"WARNING: Could not patch K1 URDF for RViz: {e}")
+            urdf_path = k1_urdf
+
         config = f"""\
 Panels:
   - Class: rviz_common/Displays
@@ -6954,8 +7105,6 @@ Panels:
         - /Global Options1
         - /RobotModel1
         - /Grid1
-        - /LaserScan1
-        - /Odometry1
       Splitter Ratio: 0.5
     Tree Height: 351
   - Class: rviz_common/Views
@@ -7010,83 +7159,10 @@ Visualization Manager:
       Plane Cell Count: 20
       Reference Frame: <Fixed Frame>
       Value: true
-    - Alpha: 1
-      Autocompute Intensity Bounds: true
-      Autocompute Value Bounds:
-        Max Value: 10
-        Min Value: -10
-        Value: true
-      Axis: Z
-      Channel Name: intensity
-      Class: rviz_default_plugins/LaserScan
-      Color: 0; 255; 0
-      Color Transformer: FlatColor
-      Decay Time: 0
-      Enabled: true
-      Invert Rainbow: false
-      Max Color: 255; 255; 255
-      Max Intensity: 4096
-      Min Color: 0; 0; 0
-      Min Intensity: 0
-      Name: LaserScan
-      Position Transformer: XYZ
-      Selectable: true
-      Size (Pixels): 4
-      Size (m): 0.019999999552965164
-      Style: Points
-      Topic:
-        Depth: 5
-        Durability Policy: Volatile
-        Filter size: 10
-        History Policy: Keep Last
-        Reliability Policy: Best Effort
-        Value: /scan
-      Use Fixed Frame: true
-      Use rainbow: false
-      Value: true
-    - Angle Tolerance: 0.10000000149011612
-      Class: rviz_default_plugins/Odometry
-      Covariance:
-        Orientation:
-          Alpha: 0.5
-          Color: 255; 255; 127
-          Color Style: Unique
-          Frame: Local
-          Offset: 1
-          Scale: 1
-          Value: false
-        Position:
-          Alpha: 0.30000001192092896
-          Color: 204; 51; 204
-          Scale: 1
-          Value: false
-        Value: false
-      Enabled: true
-      Keep: 50
-      Name: Odometry
-      Position Tolerance: 0.10000000149011612
-      Shape:
-        Alpha: 1
-        Axes Length: 0.30000001192092896
-        Axes Radius: 0.029999999329447746
-        Color: 255; 85; 0
-        Head Length: 0.07000000029802322
-        Head Radius: 0.029999999329447746
-        Shaft Length: 0.15000000596046448
-        Shaft Radius: 0.014999999664723873
-        Value: Arrow
-      Topic:
-        Depth: 5
-        Durability Policy: Volatile
-        Filter size: 10
-        History Policy: Keep Last
-        Reliability Policy: Best Effort
-        Value: /odom_combined
-      Value: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
-    Fixed Frame: odom_combined
+    Fixed Frame: Trunk
     Frame Rate: 30
   Name: root
   Tools:
@@ -7117,10 +7193,10 @@ Visualization Manager:
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.015398193150758743
-      Target Frame: base_footprint
+      Pitch: 0.36539819836616516
+      Target Frame: Trunk
       Value: Orbit (rviz_default_plugins)
-      Yaw: 5.995403289794922
+      Yaw: 5.97540283203125
     Saved: ~
 Window Geometry:
   Displays:
@@ -7552,8 +7628,98 @@ Window Geometry:
             else:
                 self._log(f"  /odom_combined received but could not parse — raw (200 chars): {odom_out[:200]}")
 
+    def _launch_mujoco(self):
+        """Launch MuJoCo viewer with the K1 robot MJCF model."""
+        if self._gazebo_process is not None and self._gazebo_process.poll() is None:
+            self._log("MuJoCo is already running.")
+            return
+
+        mjcf_path = os.path.join(_PKG_DIR, "K1_22dof.xml")
+        if not os.path.isfile(mjcf_path):
+            self._log("ERROR: K1_22dof.xml not found in project folder.")
+            return
+
+        # Find the Python interpreter — prefer conda env's python so mujoco is available
+        conda_prefix, _ = self._find_conda_env()
+        if conda_prefix:
+            python_exe = os.path.join(conda_prefix, "bin", "python3")
+            if not os.path.isfile(python_exe):
+                python_exe = "python3"
+        else:
+            python_exe = "python3"
+
+        # Check upfront whether mujoco is installed — if not, direct user to RoboApps
+        try:
+            check = subprocess.run(
+                [python_exe, "-c", "import mujoco"],
+                capture_output=True, timeout=5,
+            )
+            if check.returncode != 0:
+                self._show_mujoco_not_installed_dialog()
+                return
+        except Exception:
+            self._show_mujoco_not_installed_dialog()
+            return
+
+        # Launch MuJoCo viewer as a subprocess; chdir to project root so the
+        # MJCF meshdir="meshes/" relative path resolves correctly.
+        launch_script = (
+            "import sys, os; "
+            f"os.chdir({repr(_PKG_DIR)}); "
+            "import mujoco, mujoco.viewer; "
+            f"m = mujoco.MjModel.from_xml_path({repr(mjcf_path)}); "
+            "d = mujoco.MjData(m); "
+            "mujoco.viewer.launch(m, d)"
+        )
+        cmd = [python_exe, "-c", launch_script]
+
+        self._log("Launching MuJoCo simulation...")
+        self._log(f"  MJCF: {mjcf_path}")
+        self._log(f"  Python: {python_exe}")
+
+        mujoco_log = os.path.join(_PKG_DIR, ".mujoco_launch.log")
+        try:
+            self._gazebo_log_fh = open(mujoco_log, "w")
+            self._gazebo_process = subprocess.Popen(
+                cmd,
+                cwd=_PKG_DIR,
+                stdout=self._gazebo_log_fh,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+            self._log(f"  MuJoCo started (PID {self._gazebo_process.pid}).")
+            self._log(f"  Log: {mujoco_log}")
+            # Check after 4 s if process died immediately (e.g. mujoco not installed)
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(4000, self._check_mujoco_status)
+        except FileNotFoundError:
+            self._log(
+                f"ERROR: Python interpreter not found: {python_exe}\n"
+                "  Activate the ros_env conda environment and try again."
+            )
+        except Exception as e:
+            self._log(f"ERROR launching MuJoCo: {e}")
+
+    def _check_mujoco_status(self):
+        """Check if MuJoCo process died shortly after launch and show errors."""
+        if self._gazebo_process is not None and self._gazebo_process.poll() is not None:
+            exit_code = self._gazebo_process.returncode
+            self._log(f"WARNING: MuJoCo exited with code {exit_code}.")
+            log_path = os.path.join(_PKG_DIR, ".mujoco_launch.log")
+            if os.path.isfile(log_path):
+                with open(log_path, "r") as f:
+                    tail = f.read()
+                if tail.strip():
+                    self._log("--- MuJoCo log ---")
+                    for line in tail.strip().splitlines()[-20:]:
+                        self._log(f"  {line}")
+                if "No module named 'mujoco'" in tail:
+                    self._log(
+                        "  Install MuJoCo: conda activate ros_env && pip install mujoco"
+                    )
+
     def _stop_gazebo(self):
-        """Kill any running Gazebo processes (tracked and stale) and free port 11345."""
+        """Kill any running Gazebo/MuJoCo processes (tracked and stale)."""
         if self._gazebo_process is not None:
             try:
                 os.killpg(os.getpgid(self._gazebo_process.pid), signal.SIGTERM)
@@ -7573,12 +7739,6 @@ Window Geometry:
             except Exception:
                 pass
             self._gazebo_log_fh = None
-        # Kill any stale gzserver left over from a previous session (frees port 11345).
-        # gzclient is intentionally not pkill'd — killing it via pkill on macOS
-        # confuses Launch Services and triggers an "open document" dialog on relaunch.
-        # It will exit on its own once gzserver is gone.
-        subprocess.run(['pkill', '-9', '-f', 'gzserver'], capture_output=True)
-        time.sleep(2.0)  # give gzserver time to fully release port 11345
 
     def _launch_gazebo(self):
         """Launch Gazebo simulation in a separate process via the conda ros_env.
