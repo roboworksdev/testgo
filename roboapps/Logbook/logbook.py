@@ -262,7 +262,7 @@ class LogbookWindow(QMainWindow):
         self._populate_list()
         self._select_first()
 
-    # ── TestDrive log injection ───────────────────────────────────────────────
+    # ── TestGo log injection ───────────────────────────────────────────────
 
     def _inject_testdrive_log(self):
         """Create a new top entry from .testdrive_log.txt every time Logbook starts."""

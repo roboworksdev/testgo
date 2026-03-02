@@ -32,7 +32,7 @@ setup(
     # end setup.py custom configuration
     entry_points={
         'console_scripts': [
-            'movement = movement_pkg.movement:main',
+            'testgo = movement_pkg.testgo:main',
 
           # add custom entry points below
           # end custom entry points

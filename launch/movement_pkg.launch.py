@@ -9,8 +9,8 @@ def generate_launch_description():
     launch_description = LaunchDescription()
     launch_description.add_action(Node(
         package='movement_pkg',
-        executable='movement',
-        name='movement'
+        executable='testgo',
+        name='testgo'
     ))
 
     # customize launch file below
