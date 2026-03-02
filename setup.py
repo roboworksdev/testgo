@@ -16,8 +16,8 @@ setup(
         (os.path.join('share', package_name), ['package.xml']),
         # Include all launch files.
         (os.path.join('share', package_name, 'launch'), glob(os.path.join('launch', '*launch.[pxy][yma]*'))),
-        # Include URDF files
-        (os.path.join('share', package_name), glob('*.urdf')),
+        # Include URDF and robot model files
+        (os.path.join('share', package_name), glob('*.urdf') + glob('*.xml')),
         # Include mesh files
         (os.path.join('share', package_name, 'meshes'), glob(os.path.join('meshes', '*.STL'))),
     ],

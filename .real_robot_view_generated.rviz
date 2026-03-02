@@ -22,7 +22,7 @@ Visualization Manager:
     - Alpha: 1
       Class: rviz_default_plugins/RobotModel
       Collision Enabled: false
-      Description File: "/Users/wayneliu/Desktop/TestGo/mini_mec_real_display.urdf"
+      Description File: "/Users/wayneliu/Desktop/TestGo/K1_22dof.urdf"
       Description Source: File
       Description Topic:
         Depth: 1

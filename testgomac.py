@@ -40,7 +40,7 @@ import paramiko
 _PKG_DIR = os.path.dirname(os.path.abspath(__file__))
 MOVEMENT_PY = os.path.join(_PKG_DIR, "movement_pkg", "testgo.py")
 PROFILES_FILE = os.path.join(_PKG_DIR, ".robot_profiles.json")
-DEFAULT_IP = "192.168.0.100"
+DEFAULT_IP = "192.168.10.102"
 REMOTE_MOVEMENT_PY = "~/wheeltec_ws/src/project1/movement_pkg/movement_pkg/testgo.py"
 _CANVAS_STATE_FILE = os.path.join(_PKG_DIR, ".node_canvas.json")
 _GIT_CREDS_FILE    = os.path.join(_PKG_DIR, ".git_credentials.json")
@@ -63,17 +63,9 @@ REMOTE_BUILD_CMD = (
     "colcon build --packages-select movement_pkg"
 )
 
-NODES = [
-    ("robot_base", ROS_SOURCE_CMD + " && source ~/wheeltec_ros2/install/setup.bash && "
-     "ros2 launch turn_on_wheeltec_robot turn_on_wheeltec_robot.launch.py"),
-    ("camera", ROS_SOURCE_CMD + " && source ~/wheeltec_ros2/install/setup.bash && "
-     "ros2 launch wheeltec_camera wheeltec_camera.launch.py"),
-    # lidar is already launched by turn_on_wheeltec_robot — launching it
-    # separately causes duplicate serial port access and driver crashes
-    ("movement", ROS_SOURCE_CMD + " && source ~/wheeltec_ros2/install/setup.bash && "
-     "source ~/wheeltec_ws/install/setup.bash && "
-     "ros2 launch movement_pkg movement_pkg.launch.py"),
-]
+BOOSTER_START_CMD   = "booster-cli launch -c start"
+BOOSTER_STOP_CMD    = "booster-cli launch -c stop"
+BOOSTER_RESTART_CMD = "booster-cli launch -c restart"
 
 # Files to show in Full View (relative to _PKG_DIR)
 _FULL_VIEW_FILES = [
@@ -84,13 +76,14 @@ _FULL_VIEW_FILES = [
     "worlds/simulation.world",
     "setup.py",
     "setup_robostack.sh",
-    "mini_mec_robot_gazebo.urdf",
+    "K1_22dof.urdf",
 ]
 
 # Default project files/folders that cannot be deleted from Full View
 _PROTECTED_FV_FOLDERS = {"movement_pkg", "launch", "worlds", "roboapps"}
 _PROTECTED_FV_FILES = set(_FULL_VIEW_FILES) | {
-    "default_view.rviz", "mini_mec_robot.urdf", "package.xml",
+    "default_view.rviz", "K1_22dof.urdf", "K1_locomotion.urdf",
+    "K1_22dof-ZED.urdf", "K1_22dof.xml", "package.xml",
     "testgomac.py", "setup.cfg",
 }
 
@@ -285,9 +278,8 @@ class SSHCmdWorker(QThread):
             self.log.emit(f"ERROR ({self.label}): {e}")
 
 
-class StartAllWorker(QThread):
+class BoosterStartWorker(QThread):
     log = pyqtSignal(str)
-    status_update = pyqtSignal()
 
     def __init__(self, ssh_client):
         super().__init__()
@@ -302,198 +294,104 @@ class StartAllWorker(QThread):
         # killing robot_state_publisher but not relaunching robot_base would leave
         # the base_link→lidar_link TF unpublished, making the model split apart in RViz.
         self.log.emit("Cleaning up stale ROS2 processes...")
+        self.log.emit("Starting robot control service...")
         try:
-            _, stdout, _ = self.ssh.exec_command(
-                "pkill -f 'ros2 launch' ; pkill -f 'ros2 run' ; "
-                "pkill -f 'movement_pkg' ; "
-                "rm -f /tmp/movement_pause ; "
-                "sleep 3 ; "
-                "pkill -9 -f 'ros2 launch' ; pkill -9 -f 'ros2 run' ; "
-                "pkill -9 -f 'movement_pkg' ; "
-                "sleep 5 ; true", timeout=30)
-            stdout.channel.recv_exit_status()
-        except Exception:
-            pass
-
-        for name, cmd in NODES:
-            if name == "robot_base":
-                # If the serial hardware driver is already running, skip the full
-                # robot_base relaunch entirely.  Launching a duplicate
-                # wheeltec_robot_node crashes on the busy serial port, and the
-                # launch file's on_exit handler then kills ekf_filter_node and
-                # robot_state_publisher too — causing the model to split and freeze.
-                try:
-                    _, chk_out, _ = self.ssh.exec_command(
-                        "pgrep -f wheeltec_robot_node   > /dev/null 2>&1 && echo hw:1  || echo hw:0 ;"
-                        "pgrep -f ekf_filter_node       > /dev/null 2>&1 && echo ekf:1 || echo ekf:0 ;"
-                        "pgrep -f robot_state_publisher > /dev/null 2>&1 && echo rsp:1 || echo rsp:0",
-                        timeout=5)
-                    out = chk_out.read().decode(errors="replace")
-                except Exception:
-                    out = ""
-                hw_up  = "hw:1"  in out
-                ekf_up = "ekf:1" in out
-                rsp_up = "rsp:1" in out
-
-                if hw_up:
-                    dead = [n for n, up in [("EKF", ekf_up), ("robot_state_publisher", rsp_up)]
-                            if not up]
-                    if not dead:
-                        self.log.emit(
-                            "  robot_base: all nodes healthy, skipping relaunch.")
-                    else:
-                        self.log.emit(
-                            f"  robot_base: {', '.join(dead)} dead — recovering individually...")
-                        self._recover_robot_base_nodes()
-                    time.sleep(3)
-                    continue
-                # hw not running → fall through to normal robot_base launch below
-
-            launch_cmd = (
-                f"nohup bash -c '{cmd}' "
-                f"> /tmp/{name}.log 2>&1 &"
-            )
-            self.log.emit(f"Starting {name}...")
-            try:
-                _, stdout, _ = self.ssh.exec_command(launch_cmd, timeout=10)
-                stdout.channel.recv_exit_status()
-                self.log.emit(f"  {name} started (log: /tmp/{name}.log)")
-            except Exception as e:
-                self.log.emit(f"  ERROR starting {name}: {e}")
-            time.sleep(3)
-        self.log.emit("All nodes started.")
-        self.status_update.emit()
-
-    def _recover_robot_base_nodes(self):
-        """Restart dead ekf_filter_node / robot_state_publisher without touching
-        the serial hardware driver.
-
-        A Python recovery script is uploaded via SFTP so that the full URDF
-        content can be passed directly as a Python string argument — completely
-        avoiding the shell-quoting problems that arise when embedding XML in a
-        bash command.  The script is then executed with the ROS2 environment
-        already sourced so that 'ros2 run' resolves correctly.
-        """
-        # --- recovery script written to /tmp/testdrive_recovery.py on the robot ---
-        RECOVERY_SCRIPT = (
-            "import subprocess, glob\n"
-            "\n"
-            "def find_first(*patterns):\n"
-            "    for p in patterns:\n"
-            "        r = glob.glob(p, recursive=True)\n"
-            "        if r: return r[0]\n"
-            "    return ''\n"
-            "\n"
-            "def is_running(name):\n"
-            "    return subprocess.run(\n"
-            "        ['pgrep', '-f', name], capture_output=True).returncode == 0\n"
-            "\n"
-            "def bg(cmd, log):\n"
-            "    subprocess.Popen(\n"
-            "        cmd, stdout=open(log, 'w'), stderr=open(log, 'a'),\n"
-            "        start_new_session=True)\n"
-            "\n"
-            "# ── EKF filter node ────────────────────────────────────────────────\n"
-            "# Search for the ekf YAML specifically, then fall back to any YAML\n"
-            "# in the turn_on_wheeltec_robot package share directory.\n"
-            "ekf_yaml = find_first(\n"
-            "    '/home/wheeltec/wheeltec_ros2/install/turn_on_wheeltec_robot/share/**/ekf*.yaml',\n"
-            "    '/home/wheeltec/wheeltec_ros2/install/turn_on_wheeltec_robot/share/**/*.yaml')\n"
-            "if is_running('ekf_filter_node'):\n"
-            "    print('ekf:already_running')\n"
-            "elif ekf_yaml:\n"
-            "    bg(['ros2', 'run', 'robot_localization', 'ekf_filter_node',\n"
-            "        '--ros-args', '--params-file', ekf_yaml],\n"
-            "       '/tmp/ekf_restart.log')\n"
-            "    print('ekf:started:' + ekf_yaml)\n"
-            "else:\n"
-            "    print('ekf:no_params_found')\n"
-            "\n"
-            "# ── robot_state_publisher ──────────────────────────────────────────\n"
-            "# Find the robot URDF in the wheeltec_robot_urdf package share.\n"
-            "urdf = find_first(\n"
-            "    '/home/wheeltec/wheeltec_ros2/install/wheeltec_robot_urdf/share/**/*.urdf')\n"
-            "if is_running('robot_state_publisher'):\n"
-            "    print('rsp:already_running')\n"
-            "elif urdf:\n"
-            "    urdf_content = open(urdf).read()\n"
-            "    bg(['ros2', 'run', 'robot_state_publisher', 'robot_state_publisher',\n"
-            "        '--ros-args', '-p', 'robot_description:=' + urdf_content],\n"
-            "       '/tmp/rsp_restart.log')\n"
-            "    print('rsp:started:' + urdf)\n"
-            "else:\n"
-            "    print('rsp:no_urdf_found')\n"
-            "\n"
-            "print('recovery:done')\n"
-        )
-
-        # Upload the script via SFTP (binary write avoids any encoding edge-cases)
-        try:
-            sftp = self.ssh.open_sftp()
-            with sftp.open('/tmp/testdrive_recovery.py', 'wb') as fh:
-                fh.write(RECOVERY_SCRIPT.encode('utf-8'))
-            sftp.close()
+            _, stdout, stderr = self.ssh.exec_command(BOOSTER_START_CMD, timeout=30)
+            exit_code = stdout.channel.recv_exit_status()
+            out = stdout.read().decode(errors="replace").strip()
+            err = stderr.read().decode(errors="replace").strip()
+            if out:
+                self.log.emit(f"  {out}")
+            if exit_code != 0 and err:
+                self.log.emit(f"  ERROR: {err}")
+            else:
+                self.log.emit("Robot control service started.")
         except Exception as e:
-            self.log.emit(f"  Recovery upload failed: {e}")
-            return
-
-        # Run the script with the full ROS2 + wheeltec workspace environment
-        run_cmd = (
-            ROS_SOURCE_CMD + " && source ~/wheeltec_ros2/install/setup.bash && "
-            "python3 /tmp/testdrive_recovery.py"
-        )
-        try:
-            _, out, _ = self.ssh.exec_command(run_cmd, timeout=30)
-            for line in out.read().decode(errors="replace").splitlines():
-                if line.strip():
-                    self.log.emit(f"  Recovery: {line.strip()}")
-        except Exception as e:
-            self.log.emit(f"  Recovery execution failed: {e}")
+            self.log.emit(f"ERROR: {e}")
 
 
-class StopAllWorker(QThread):
+class BoosterStopWorker(QThread):
     log = pyqtSignal(str)
-    status_update = pyqtSignal()
 
     def __init__(self, ssh_client):
         super().__init__()
         self.ssh = ssh_client
 
     def run(self):
-        self.log.emit("Sending stop velocity...")
+        self.log.emit("Stopping robot control service...")
         try:
-            self.ssh.exec_command(
-                ROS_SOURCE_CMD + ' && '
-                'ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist '
-                '"{linear: {x: 0.0}, angular: {z: 0.0}}"',
-                timeout=10)
-        except Exception:
-            pass
+            _, stdout, stderr = self.ssh.exec_command(BOOSTER_STOP_CMD, timeout=30)
+            exit_code = stdout.channel.recv_exit_status()
+            out = stdout.read().decode(errors="replace").strip()
+            err = stderr.read().decode(errors="replace").strip()
+            if out:
+                self.log.emit(f"  {out}")
+            if exit_code != 0 and err:
+                self.log.emit(f"  ERROR: {err}")
+            else:
+                self.log.emit("Robot control service stopped.")
+        except Exception as e:
+            self.log.emit(f"ERROR: {e}")
 
-        # Kill all ROS2 launch processes and their child nodes.
-        # Use SIGKILL (-9) to ensure the full nohup -> bash -> ros2 launch -> node
-        # process tree is terminated (SIGTERM often doesn't propagate).
-        self.log.emit("Killing all ROS2 processes...")
+
+class BoosterRestartWorker(QThread):
+    log = pyqtSignal(str)
+
+    def __init__(self, ssh_client):
+        super().__init__()
+        self.ssh = ssh_client
+
+    def run(self):
+        self.log.emit("Restarting robot control service...")
         try:
-            _, stdout, _ = self.ssh.exec_command(
-                "pkill -f 'ros2 launch' ; pkill -f 'ros2 run' ; "
-                "pkill -f wheeltec_robot_node ; pkill -f lslidar_driver_node ; "
-                "pkill -f imu_filter_madgwick ; pkill -f robot_state_publisher ; "
-                "pkill -f ekf_filter_node ; pkill -f joint_state_publisher ; "
-                "pkill -f 'movement_pkg' ; "
-                "sleep 3 ; "
-                "pkill -9 -f 'ros2 launch' ; pkill -9 -f 'ros2 run' ; "
-                "pkill -9 -f wheeltec_robot_node ; pkill -9 -f lslidar_driver_node ; "
-                "pkill -9 -f imu_filter_madgwick ; pkill -9 -f robot_state_publisher ; "
-                "pkill -9 -f ekf_filter_node ; pkill -9 -f joint_state_publisher ; "
-                "pkill -9 -f 'movement_pkg' ; "
-                "screen -wipe 2>/dev/null; sleep 5; true", timeout=30)
-            stdout.channel.recv_exit_status()
-        except Exception:
-            pass
-        self.log.emit("All nodes stopped.")
-        self.status_update.emit()
+            _, stdout, stderr = self.ssh.exec_command(BOOSTER_RESTART_CMD, timeout=30)
+            exit_code = stdout.channel.recv_exit_status()
+            out = stdout.read().decode(errors="replace").strip()
+            err = stderr.read().decode(errors="replace").strip()
+            if out:
+                self.log.emit(f"  {out}")
+            if exit_code != 0 and err:
+                self.log.emit(f"  ERROR: {err}")
+            else:
+                self.log.emit("Robot control service restarted.")
+        except Exception as e:
+            self.log.emit(f"ERROR: {e}")
 
+
+class LogRetrievalWorker(QThread):
+    log = pyqtSignal(str)
+    download_ready = pyqtSignal(str)  # emits remote zip path on success
+
+    def __init__(self, ssh_client, start_time, end_time):
+        super().__init__()
+        self.ssh = ssh_client
+        self.start_time = start_time   # YYYYMMDD-HHMMSS
+        self.end_time = end_time       # YYYYMMDD-HHMMSS or ""
+
+    def run(self):
+        remote_output = "/home/booster/Downloads"
+        cmd = f"booster-cli log -st {self.start_time}"
+        if self.end_time:
+            cmd += f" -et {self.end_time}"
+        cmd += f" -o {remote_output}"
+        self.log.emit(f"Running: {cmd}")
+        try:
+            _, stdout, stderr = self.ssh.exec_command(cmd, timeout=120)
+            exit_code = stdout.channel.recv_exit_status()
+            out = stdout.read().decode(errors="replace").strip()
+            err = stderr.read().decode(errors="replace").strip()
+            for line in (out.splitlines() if out else []):
+                self.log.emit(f"  {line}")
+            for line in (err.splitlines() if err else []):
+                self.log.emit(f"  {line}")
+            if exit_code == 0:
+                zip_path = f"{remote_output}/{self.start_time}.zip"
+                self.log.emit(f"Log file ready: {zip_path}")
+                self.download_ready.emit(zip_path)
+            else:
+                self.log.emit(f"ERROR: command failed (exit code {exit_code})")
+        except Exception as e:
+            self.log.emit(f"ERROR: {e}")
 
 
 class SimOutputWorker(QThread):
@@ -3453,18 +3351,18 @@ class RobotControlApp(QMainWindow):
         btn_row.addStretch()
 
         for btn_text, btn_style, btn_slot, btn_attr in [
-            ("Start All",
+            ("Start",
              "QPushButton { background-color: #34C759; color: white; padding: 8px; border-radius: 8px; }"
              "QPushButton:disabled { background-color: #B0B0B0; color: #707070; border-radius: 8px; }",
-             self.start_all, "start_all_btn"),
-            ("Stop All",
+             self.start_robot, "start_btn"),
+            ("Stop",
              "QPushButton { background-color: #FF3B30; color: white; padding: 8px; border-radius: 8px; }"
              "QPushButton:disabled { background-color: #B0B0B0; color: #707070; border-radius: 8px; }",
-             self.stop_all, "stop_all_btn"),
-            ("Launch Files",
+             self.stop_robot, "stop_btn"),
+            ("Restart",
              "QPushButton { background-color: #007AFF; color: white; padding: 8px; border-radius: 8px; }"
              "QPushButton:disabled { background-color: #B0B0B0; color: #707070; border-radius: 8px; }",
-             self._show_launch_file_dialog, "launch_file_btn"),
+             self.restart_robot, "restart_btn"),
             ("Pause Robot",
              "QPushButton { background-color: #FF9500; color: white; padding: 8px; border-radius: 8px; }"
              "QPushButton:disabled { background-color: #B0B0B0; color: #707070; border-radius: 8px; }",
@@ -3477,8 +3375,6 @@ class RobotControlApp(QMainWindow):
             btn.setEnabled(False)
             setattr(self, btn_attr, btn)
             btn_row.addWidget(btn)
-
-        self.launch_file_btn.setEnabled(True)  # always active
         btn_row.addStretch()
         control_layout.addLayout(btn_row)
 
@@ -3498,35 +3394,20 @@ class RobotControlApp(QMainWindow):
         self.check_logs_btn.setEnabled(True)   # always active
         btn_row2.addWidget(self.check_logs_btn)
 
+        self.get_robot_logs_btn = QPushButton("Get Robot Logs")
+        self.get_robot_logs_btn.setStyleSheet(
+            "QPushButton { background-color: #5856D6; color: white; padding: 6px; border-radius: 8px; }"
+            "QPushButton:disabled { background-color: #B0B0B0; color: #707070; border-radius: 8px; }"
+        )
+        self.get_robot_logs_btn.clicked.connect(self._show_log_retrieval_dialog)
+        self.get_robot_logs_btn.setEnabled(False)
+        btn_row2.addWidget(self.get_robot_logs_btn)
+
         control_layout.addLayout(btn_row2)
 
         self.node_labels = {}
         self.node_start_btns = {}
         self.node_stop_btns = {}
-
-        for name, cmd in NODES:
-            row = QHBoxLayout()
-            label = QLabel(f"  {name}")
-            label.setMinimumWidth(100)
-            status = QLabel("unknown")
-            status.setMinimumWidth(80)
-            self.node_labels[name] = status
-
-            start_btn = QPushButton("Start")
-            start_btn.setEnabled(False)
-            start_btn.clicked.connect(lambda checked, n=name, c=cmd: self.start_node(n, c))
-            self.node_start_btns[name] = start_btn
-
-            stop_btn = QPushButton("Stop")
-            stop_btn.setEnabled(False)
-            stop_btn.clicked.connect(lambda checked, n=name: self.stop_node(n))
-            self.node_stop_btns[name] = stop_btn
-
-            row.addWidget(label)
-            row.addWidget(status)
-            row.addWidget(start_btn)
-            row.addWidget(stop_btn)
-            control_layout.addLayout(row)
 
         self._control_layout = control_layout
         control_group.setLayout(control_layout)
@@ -5530,90 +5411,96 @@ class RobotControlApp(QMainWindow):
         dlg.exec()
         return False
 
-    # --- Launch File dialog ---
 
-    def _show_launch_file_dialog(self):
+    # --- K1 Log Retrieval dialog ---
+
+    def _show_log_retrieval_dialog(self):
         if not self._require_ssh_connection():
             return
 
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Available Launch Files")
-        dialog.setMinimumWidth(500)
-        dialog.setMinimumHeight(400)
+        import datetime
+        now = datetime.datetime.now()
+        default_end = now.strftime("%Y%m%d-%H%M%S")
+        default_start = (now - datetime.timedelta(minutes=30)).strftime("%Y%m%d-%H%M%S")
 
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Get Robot Logs")
+        dialog.setMinimumWidth(480)
         layout = QVBoxLayout(dialog)
 
-        # Top row with Add button
-        top_row = QHBoxLayout()
-        top_row.addStretch()
-        add_btn = QPushButton("Add")
-        add_btn.setStyleSheet(
-            "QPushButton { background-color: #007AFF; color: white; "
-            "padding: 6px 20px; border-radius: 8px; font-weight: bold; }"
+        form = QFormLayout()
+        start_input = QLineEdit(default_start)
+        start_input.setPlaceholderText("YYYYMMDD-HHMMSS")
+        end_input = QLineEdit(default_end)
+        end_input.setPlaceholderText("YYYYMMDD-HHMMSS  (leave blank for no end limit)")
+        form.addRow("Start Time:", start_input)
+        form.addRow("End Time:", end_input)
+        layout.addLayout(form)
+
+        note = QLabel("Note: K1 uses UTC+8. Adjust times if you are in a different timezone.")
+        note.setStyleSheet("color: #888; font-size: 11px;")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+        log_area = QTextEdit()
+        log_area.setReadOnly(True)
+        log_area.setFont(QFont("Menlo", 11))
+        log_area.setMinimumHeight(160)
+        layout.addWidget(log_area)
+
+        btn_row = QHBoxLayout()
+        retrieve_btn = QPushButton("Retrieve && Download")
+        retrieve_btn.setStyleSheet(
+            "QPushButton { background-color: #5856D6; color: white; "
+            "padding: 8px 16px; border-radius: 8px; font-weight: bold; }"
         )
-        top_row.addWidget(add_btn)
-        layout.addLayout(top_row)
+        close_btn = QPushButton("Close")
+        close_btn.setStyleSheet("padding: 8px 16px;")
+        close_btn.clicked.connect(dialog.accept)
+        btn_row.addWidget(retrieve_btn)
+        btn_row.addStretch()
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
 
-        # Discover launch files via SSH
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        container = QWidget()
-        file_layout = QVBoxLayout(container)
+        def _append(msg):
+            log_area.append(msg)
+            log_area.verticalScrollBar().setValue(log_area.verticalScrollBar().maximum())
 
-        checkboxes = []
-        try:
-            stdin, stdout, stderr = self.ssh_client.exec_command(
-                'find ~/wheeltec_ros2/install -name "*.launch.py" 2>/dev/null'
-            )
-            files = stdout.read().decode().strip().split('\n')
-            files = [f for f in files if f.strip()]
-
-            if not files:
-                file_layout.addWidget(QLabel("No launch files found."))
-            else:
-                for filepath in sorted(files):
-                    row = QHBoxLayout()
-                    label = QLabel(filepath)
-                    label.setStyleSheet("font-size: 12px;")
-                    cb = QCheckBox()
-                    cb.setProperty("filepath", filepath)
-                    row.addWidget(cb)
-                    row.addWidget(label)
-                    row.addStretch()
-                    file_layout.addLayout(row)
-                    checkboxes.append(cb)
-        except Exception as e:
-            file_layout.addWidget(QLabel(f"Error discovering files: {e}"))
-
-        file_layout.addStretch()
-        scroll.setWidget(container)
-        layout.addWidget(scroll)
-
-        def _on_add():
-            selected = [cb for cb in checkboxes if cb.isChecked()]
-            if not selected:
-                QMessageBox.warning(dialog, "No Selection",
-                                    "Please select at least one launch file.")
+        def _on_retrieve():
+            start = start_input.text().strip()
+            end = end_input.text().strip()
+            if not start:
+                _append("ERROR: Start time is required.")
                 return
-            for cb in selected:
-                filepath = cb.property("filepath")
-                # Extract package name and launch filename
-                # Path pattern: .../install/<package>/share/<package>/launch/<file>.launch.py
-                parts = filepath.split('/')
-                launch_name = parts[-1]  # e.g. "turn_on_wheeltec_robot.launch.py"
-                pkg_name = None
-                for i, p in enumerate(parts):
-                    if p == 'install' and i + 1 < len(parts):
-                        pkg_name = parts[i + 1]
-                        break
-                if pkg_name is None:
-                    pkg_name = "unknown_pkg"
-                display_name = launch_name.replace('.launch.py', '')
-                cmd = f"source ~/wheeltec_ros2/install/setup.bash && ros2 launch {pkg_name} {launch_name}"
-                self._add_launch_node(display_name, cmd)
-            dialog.accept()
+            retrieve_btn.setEnabled(False)
+            _append(f"--- Retrieving logs from {start} to {end or '(no limit)'} ---")
+            w = LogRetrievalWorker(self.ssh_client, start, end)
+            w.log.connect(_append)
+            w.download_ready.connect(lambda path: _on_download_ready(path))
+            w.finished.connect(lambda: retrieve_btn.setEnabled(True))
+            w.start()
+            self._workers.append(w)
+            w.finished.connect(lambda: self._workers.remove(w) if w in self._workers else None)
 
-        add_btn.clicked.connect(_on_add)
+        def _on_download_ready(remote_path):
+            local_dir = QFileDialog.getExistingDirectory(
+                dialog, "Save log zip to folder",
+                os.path.expanduser("~/Downloads"))
+            if not local_dir:
+                _append("Download cancelled.")
+                return
+            zip_name = os.path.basename(remote_path)
+            local_path = os.path.join(local_dir, zip_name)
+            _append(f"Downloading {zip_name} to {local_dir} ...")
+            try:
+                sftp = self.ssh_client.open_sftp()
+                sftp.get(remote_path, local_path)
+                sftp.close()
+                _append(f"Downloaded: {local_path}")
+            except Exception as e:
+                _append(f"Download ERROR: {e}")
+
+        retrieve_btn.clicked.connect(_on_retrieve)
         dialog.exec()
 
     def _add_launch_node(self, name, cmd):
@@ -6286,12 +6173,14 @@ class RobotControlApp(QMainWindow):
         self.editor_deploy_btn.setEnabled(enabled)
         self.canvas_deploy_btn.setEnabled(enabled)
         # save buttons (save_btn, editor_save_btn, canvas_save_btn) are always enabled
-        self.start_all_btn.setEnabled(enabled)
-        self.stop_all_btn.setEnabled(enabled)
+        self.start_btn.setEnabled(enabled)
+        self.stop_btn.setEnabled(enabled)
+        self.restart_btn.setEnabled(enabled)
         self.pause_btn.setEnabled(enabled)
         self.check_nodes_btn.setEnabled(enabled)
         self.check_topics_btn.setEnabled(enabled)
-        # check_logs_btn and launch_file_btn are intentionally excluded — always active
+        self.get_robot_logs_btn.setEnabled(enabled)
+        # check_logs_btn is intentionally excluded — always active
         for btn in self.node_start_btns.values():
             btn.setEnabled(enabled)
         for btn in self.node_stop_btns.values():
@@ -6722,28 +6611,41 @@ class RobotControlApp(QMainWindow):
         w.finished.connect(self._flash_deploy_buttons)
         self._run_worker(w)
 
-    def start_all(self):
+    def start_robot(self):
         if not self.ssh_client:
             self._log("ERROR: Not connected to robot.")
             return
-        self.start_all_btn.setEnabled(False)
-        self._log("--- Starting all nodes ---")
-        w = StartAllWorker(self.ssh_client)
+        self.start_btn.setEnabled(False)
+        self._log("--- Starting robot control service ---")
+        w = BoosterStartWorker(self.ssh_client)
         w.log.connect(self._log)
-        w.finished.connect(lambda: self.start_all_btn.setEnabled(True))
+        w.finished.connect(lambda: self.start_btn.setEnabled(True))
         self._workers.append(w)
         w.finished.connect(lambda: self._workers.remove(w))
         w.start()
 
-    def stop_all(self):
+    def stop_robot(self):
         if not self.ssh_client:
             self._log("ERROR: Not connected to robot.")
             return
-        self.stop_all_btn.setEnabled(False)
-        self._log("--- Stopping all nodes ---")
-        w = StopAllWorker(self.ssh_client)
+        self.stop_btn.setEnabled(False)
+        self._log("--- Stopping robot control service ---")
+        w = BoosterStopWorker(self.ssh_client)
         w.log.connect(self._log)
-        w.finished.connect(lambda: self.stop_all_btn.setEnabled(True))
+        w.finished.connect(lambda: self.stop_btn.setEnabled(True))
+        self._workers.append(w)
+        w.finished.connect(lambda: self._workers.remove(w))
+        w.start()
+
+    def restart_robot(self):
+        if not self.ssh_client:
+            self._log("ERROR: Not connected to robot.")
+            return
+        self.restart_btn.setEnabled(False)
+        self._log("--- Restarting robot control service ---")
+        w = BoosterRestartWorker(self.ssh_client)
+        w.log.connect(self._log)
+        w.finished.connect(lambda: self.restart_btn.setEnabled(True))
         self._workers.append(w)
         w.finished.connect(lambda: self._workers.remove(w))
         w.start()
@@ -6863,14 +6765,13 @@ class RobotControlApp(QMainWindow):
                 self._log(f"Error reading Gazebo log: {e}")
             return
 
-        self._log("--- Checking launch logs (last 5 lines each) ---")
-        for name, _ in NODES:
-            w = SSHCmdWorker(
-                self.ssh_client,
-                f"echo '=== {name} ===' && tail -5 /tmp/{name}.log 2>&1 || echo 'No log file'",
-                f"Log: {name}",
-            )
-            self._run_worker(w)
+        self._log("--- Robot control service status ---")
+        w = SSHCmdWorker(
+            self.ssh_client,
+            "booster-cli launch -c status 2>&1 || systemctl status booster 2>&1 | head -20",
+            "Service status",
+        )
+        self._run_worker(w)
 
 
     # --- RViz2 integration ---
@@ -7042,7 +6943,7 @@ class RobotControlApp(QMainWindow):
             robot_state_publisher instances (each publishing /robot_description).
         The robot's own /tf stream still drives all movement and positioning.
         """
-        urdf_path = os.path.join(_PKG_DIR, "mini_mec_real_display.urdf")
+        urdf_path = os.path.join(_PKG_DIR, "K1_22dof.urdf")
         config = f"""\
 Panels:
   - Class: rviz_common/Displays
