@@ -14,6 +14,7 @@ import math
 import urllib.request
 import urllib.error
 import base64
+import hashlib
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QDoubleSpinBox, QComboBox, QPushButton, QTextEdit,
@@ -117,10 +118,11 @@ _SIMPLE_VIEW_SNIPPETS = {
         "        pass  # \u2190 edit action\n"
     ),
     # Movement (Booster SDK)
+    "stop":            "    client.Move(0.0, 0.0, 0.0)  # stop robot\n",
     "walk_forward":    "    walk_forward()  # walk forward\n",
     "walk_backward":   "    walk_backward()  # walk backward\n",
     "body_rotate_cw":  "    body_rotate_cw()  # rotate body clockwise\n",
-    "body_rotate_acw": "    body_rotate_acw()  # rotate body anti-clockwise\n",
+    "body_rotate_acw": "    client.Move(0.0, 0.0, 0.3)  # rotate body anti-clockwise\n",
     "wave_left_hand":  "    wave_left_hand()  # wave left hand\n",
     "wave_right_hand": "    wave_right_hand()  # wave right hand\n",
     "wave_both_hands": "    wave_both_hands()  # wave both hands\n",
@@ -1729,6 +1731,7 @@ class FunctionsPanel(QWidget):
             ("for_loop", "for_loop"),
         ]),
         ("Movement", [
+            ("stop", "stop"),
             ("walk_forward", "walk_forward"),
             ("walk_backward", "walk_backward"),
             ("body_rotate_cw", "body_rotate_cw"),
@@ -1854,9 +1857,9 @@ class SimpleViewEditor(LineNumberEditor):
     """Editor for Simple View — only allows drops inside the control_loop section."""
 
     def _logic_start_line(self):
-        """Return the line number of 'def control_loop', or None."""
+        """Return the line number of the 'while True:' loop, or None."""
         for i, line in enumerate(self.toPlainText().split('\n')):
-            if 'def control_loop' in line:
+            if line.strip().startswith('while True'):
                 return i
         return None
 
@@ -3099,11 +3102,11 @@ class GitPushDialog(QDialog):
         saved_user = creds.get("username", "")
         saved_repo = creds.get("repo_name", "")
         default_repo_url = (
-            f"https://github.com/{saved_user}/{saved_repo}"
+            f"https://github.com/{saved_user}/{saved_repo}.git"
             if saved_user and saved_repo else ""
         )
         self._repo_url = QLineEdit(default_repo_url)
-        self._repo_url.setPlaceholderText("https://github.com/username/repo")
+        self._repo_url.setPlaceholderText("https://github.com/username/repo.git")
 
         # PAT row
         pat_row = QHBoxLayout()
@@ -3164,9 +3167,12 @@ class GitPushDialog(QDialog):
             QMessageBox.warning(self, "Missing Field", "GitHub Repository URL is required."); return
         if not self._pat.text().strip():
             QMessageBox.warning(self, "Missing Field", "Personal Access Token is required."); return
+        repo_url = self._repo_url.text().strip()
+        if repo_url and not repo_url.endswith(".git"):
+            repo_url += ".git"
         self._result = {
             "message":  self._msg.text().strip() or f"TestGo update {time.strftime('%Y-%m-%d %H:%M')}",
-            "repo_url": self._repo_url.text().strip(),
+            "repo_url": repo_url,
             "branch":   self._branch.currentText(),
             "token":    self._pat.text().strip(),
             "save":     self._save_cb.isChecked(),
@@ -5837,15 +5843,24 @@ class RobotControlApp(QMainWindow):
         return (
             f'from booster_robotics_sdk_python import B1LocoClient, ChannelFactory\n'
             f'from time import sleep\n'
+            f'import signal\n'
             f'\n'
             f'ChannelFactory.Instance().Init(0)\n'
             f'client = B1LocoClient()\n'
             f'client.Init()\n'
             f'sleep(1.0)\n'
             f'\n'
-            f'print(client.Move(0.0, 0.0, 0.3))  # rotate anti-clockwise\n'
+            f'def _on_stop(sig, frame):\n'
+            f'    for _ in range(5):\n'
+            f'        client.Move(0.0, 0.0, 0.0)\n'
+            f'        sleep(0.2)\n'
+            f'    raise SystemExit(0)\n'
+            f'\n'
+            f'signal.signal(signal.SIGTERM, _on_stop)\n'
+            f'signal.signal(signal.SIGINT, _on_stop)\n'
             f'\n'
             f'while True:\n'
+            f'    pass  # \u2190 drag a function here\n'
             f'    sleep(0.1)\n'
         )
 
@@ -6085,11 +6100,15 @@ class RobotControlApp(QMainWindow):
 
     def _load_simple_sdk_script(self):
         """Load SDK script from sdk_program.py, or generate a fresh default."""
+        code = None
         if os.path.isfile(SDK_SCRIPT_PY):
             with open(SDK_SCRIPT_PY, 'r') as f:
                 code = f.read()
-        else:
+        # Regenerate if the stop handler is missing (old saved script)
+        if not code or 'signal.signal' not in code:
             code = self._generate_simple_code()
+            with open(SDK_SCRIPT_PY, 'w') as f:
+                f.write(code)
         self._syncing = True
         try:
             self.simple_editor.setPlainText(code)
@@ -6112,18 +6131,28 @@ class RobotControlApp(QMainWindow):
         self._sdk_running = True
         self.sv_run_btn.setIcon(_draw_stop_icon(36))
         self.sv_run_btn.setToolTip("Stop SDK script")
-        self._log("--- Deploying SDK script ---")
         with open(SDK_SCRIPT_PY, 'r') as f:
             script_content = f.read()
 
-        def _on_uploaded():
+        script_hash = hashlib.md5(script_content.encode()).hexdigest()
+
+        def _run():
             self._log("Running SDK script on robot ...")
             w2 = SDKRunWorker(self.ssh_client, REMOTE_SDK_SCRIPT)
             self._run_worker(w2)
 
-        w = SDKDeployWorker(self.ssh_client, script_content)
-        w.finished_ok.connect(_on_uploaded)
-        self._run_worker(w)
+        if script_hash == getattr(self, '_deployed_script_hash', None):
+            # Script unchanged — skip upload, run directly
+            _run()
+        else:
+            # Script changed — deploy then run
+            self._log("--- Deploying SDK script ---")
+            def _on_uploaded():
+                self._deployed_script_hash = script_hash
+                _run()
+            w = SDKDeployWorker(self.ssh_client, script_content)
+            w.finished_ok.connect(_on_uploaded)
+            self._run_worker(w)
 
     def _stop_sdk(self):
         """Kill the running script and send a zero-velocity stop to the robot."""
@@ -6133,25 +6162,8 @@ class RobotControlApp(QMainWindow):
         self.sv_run_btn.setIcon(_draw_play_icon(36))
         self.sv_run_btn.setToolTip("Deploy & Run SDK script on robot")
         self._log("Stopping SDK script ...")
-        # Kill running script, then send stop via nohup (same detach trick)
-        stop_script = (
-            "from booster_robotics_sdk_python import B1LocoClient, ChannelFactory\n"
-            "from time import sleep\n"
-            "ChannelFactory.Instance().Init(0)\n"
-            "c = B1LocoClient()\n"
-            "c.Init()\n"
-            "sleep(1.0)\n"
-            "c.Move(0.0, 0.0, 0.0)\n"
-            "sleep(2.0)\n"
-        )
-        stop_cmd = (
-            "pkill -f 'python3.*booster_program' 2>/dev/null || true; "
-            f"printf {repr(stop_script)} > /tmp/booster_stop.py; "
-            "nohup bash -c '"
-            "export FASTRTPS_DEFAULT_PROFILES_FILE=/opt/booster/BoosterRos2/fastdds_profile.xml; "
-            "python3 /tmp/booster_stop.py' "
-            "> /tmp/booster_stop.log 2>&1 &"
-        )
+        # Send SIGTERM — the play script's signal handler sends Move(0,0,0) then exits
+        stop_cmd = "pkill -TERM -f 'python3.*booster_program' 2>/dev/null || true"
         w = SSHCmdWorker(self.ssh_client, stop_cmd, "sdk stop")
         self._run_worker(w)
 
@@ -6535,6 +6547,7 @@ class RobotControlApp(QMainWindow):
         )
 
     def do_disconnect(self):
+        self._deployed_script_hash = None
         if self._sdk_running:
             self._sdk_running = False
             self.sv_run_btn.setIcon(_draw_play_icon(36))
