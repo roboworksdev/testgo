@@ -6131,7 +6131,7 @@ class RobotControlApp(QMainWindow):
             with open(SDK_SCRIPT_PY, 'r') as f:
                 code = f.read()
         # Regenerate if the script is outdated (missing current version marker)
-        if not code or '# TestGo SDK v4' not in code:
+        if not code or '# TestGo SDK v5' not in code:
             code = self._generate_simple_code()
             with open(SDK_SCRIPT_PY, 'w') as f:
                 f.write(code)
