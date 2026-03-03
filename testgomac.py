@@ -117,12 +117,12 @@ _SIMPLE_VIEW_SNIPPETS = {
         "    for i in range(10):  # \u2190 edit range\n"
         "        pass  # \u2190 edit action\n"
     ),
-    # Movement (Booster SDK)
-    "stop":            "    client.Move(0.0, 0.0, 0.0)  # stop robot\n",
-    "walk_forward":    "    walk_forward()  # walk forward\n",
-    "walk_backward":   "    walk_backward()  # walk backward\n",
-    "body_rotate_cw":  "    body_rotate_cw()  # rotate body clockwise\n",
-    "body_rotate_acw": "    client.Move(0.0, 0.0, 0.3)  # rotate body anti-clockwise\n",
+    # Movement (Booster SDK) — duration in seconds, edit to change timing
+    "stop":            "    do_move(0.0, 0.0,  0.0, 2.0)  # stop robot for 2.0s\n",
+    "walk_forward":    "    do_move(0.8, 0.0,  0.0, 2.0)  # walk forward for 2.0s\n",
+    "walk_backward":   "    do_move(-0.2, 0.0, 0.0, 2.0)  # walk backward for 2.0s\n",
+    "body_rotate_cw":  "    do_move(0.0, 0.0, -0.2, 2.0)  # rotate clockwise for 2.0s\n",
+    "body_rotate_acw": "    do_move(0.0, 0.0,  0.3, 2.0)  # rotate anti-clockwise for 2.0s\n",
     "wave_left_hand":  "    wave_left_hand()  # wave left hand\n",
     "wave_right_hand": "    wave_right_hand()  # wave right hand\n",
     "wave_both_hands": "    wave_both_hands()  # wave both hands\n",
@@ -1871,21 +1871,21 @@ class SimpleViewEditor(LineNumberEditor):
             super().dragEnterEvent(event)
 
     def dragMoveEvent(self, event):
-        """Show forbidden cursor when hovering over the parameter section."""
+        """Show forbidden cursor when hovering over the header section."""
         logic_line = self._logic_start_line()
         if logic_line is not None:
             hover_line = self.cursorForPosition(event.position().toPoint()).blockNumber()
-            if hover_line <= logic_line:
+            if hover_line < logic_line:
                 event.ignore()
                 return
         event.acceptProposedAction()
 
     def dropEvent(self, event):
-        """Block drops above the control_loop section."""
+        """Block drops above the while True: loop."""
         logic_line = self._logic_start_line()
         if logic_line is not None:
             drop_line = self.cursorForPosition(event.position().toPoint()).blockNumber()
-            if drop_line <= logic_line:
+            if drop_line < logic_line:
                 event.ignore()
                 return
         super().dropEvent(event)
@@ -5841,6 +5841,7 @@ class RobotControlApp(QMainWindow):
     def _generate_simple_code(self):
         """Generate standalone Booster SDK Python script."""
         return (
+            f'# TestGo SDK v4\n'
             f'from booster_robotics_sdk_python import B1LocoClient, ChannelFactory\n'
             f'from time import sleep\n'
             f'import signal\n'
@@ -5859,9 +5860,14 @@ class RobotControlApp(QMainWindow):
             f'signal.signal(signal.SIGTERM, _on_stop)\n'
             f'signal.signal(signal.SIGINT, _on_stop)\n'
             f'\n'
+            f'def do_move(vx, vy, vz, duration=2.0):\n'
+            f'    steps = max(1, int(duration / 0.1))\n'
+            f'    for _ in range(steps):\n'
+            f'        client.Move(vx, vy, vz)\n'
+            f'        sleep(0.1)\n'
+            f'\n'
             f'while True:\n'
             f'    pass  # \u2190 drag a function here\n'
-            f'    sleep(0.1)\n'
         )
 
     def _on_simple_code_changed(self):
@@ -6104,8 +6110,8 @@ class RobotControlApp(QMainWindow):
         if os.path.isfile(SDK_SCRIPT_PY):
             with open(SDK_SCRIPT_PY, 'r') as f:
                 code = f.read()
-        # Regenerate if the stop handler is missing (old saved script)
-        if not code or 'signal.signal' not in code:
+        # Regenerate if the script is outdated (missing current version marker)
+        if not code or '# TestGo SDK v4' not in code:
             code = self._generate_simple_code()
             with open(SDK_SCRIPT_PY, 'w') as f:
                 f.write(code)
