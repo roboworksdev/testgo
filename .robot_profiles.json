@@ -16,5 +16,11 @@
     "username": "wheeltec",
     "password": "dongguan",
     "name": "Cremorne Wifi"
+  },
+  {
+    "ip": "10.0.236.82",
+    "username": "booster",
+    "password": "123456",
+    "name": ""
   }
 ]

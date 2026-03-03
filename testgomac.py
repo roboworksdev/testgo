@@ -42,6 +42,8 @@ MOVEMENT_PY = os.path.join(_PKG_DIR, "movement_pkg", "testgo.py")
 PROFILES_FILE = os.path.join(_PKG_DIR, ".robot_profiles.json")
 DEFAULT_IP = "192.168.10.102"
 REMOTE_MOVEMENT_PY = "~/wheeltec_ws/src/project1/movement_pkg/movement_pkg/testgo.py"
+SDK_SCRIPT_PY = os.path.join(_PKG_DIR, "sdk_program.py")
+REMOTE_SDK_SCRIPT = "~/booster_program.py"
 _CANVAS_STATE_FILE = os.path.join(_PKG_DIR, ".node_canvas.json")
 _GIT_CREDS_FILE    = os.path.join(_PKG_DIR, ".git_credentials.json")
 
@@ -87,61 +89,43 @@ _PROTECTED_FV_FILES = set(_FULL_VIEW_FILES) | {
     "testgomac.py", "setup.cfg",
 }
 
-# Code snippets for drag-and-drop in Simple View (8-space indent for __init__ body)
+# Code snippets for drag-and-drop in Simple View (4-space indent for control_loop body)
 _SIMPLE_VIEW_SNIPPETS = {
     # Control
     "if_statement": (
-        "        # --- if statement ---  \u2190 edit\n"
-        "        if condition:  # \u2190 edit condition\n"
-        "            pass  # \u2190 edit action\n"
+        "    # --- if statement ---  \u2190 edit\n"
+        "    if condition:  # \u2190 edit condition\n"
+        "        pass  # \u2190 edit action\n"
     ),
     "while_statement": (
-        "        # --- while loop ---  \u2190 edit\n"
-        "        while condition:  # \u2190 edit condition\n"
-        "            pass  # \u2190 edit action\n"
+        "    # --- while loop ---  \u2190 edit\n"
+        "    while condition:  # \u2190 edit condition\n"
+        "        pass  # \u2190 edit action\n"
     ),
     "switch_statement": (
-        "        # --- if/elif ---  \u2190 edit\n"
-        "        if value == option1:  # \u2190 edit\n"
-        "            pass\n"
-        "        elif value == option2:  # \u2190 edit\n"
-        "            pass\n"
-        "        else:\n"
-        "            pass\n"
+        "    # --- if/elif ---  \u2190 edit\n"
+        "    if value == option1:  # \u2190 edit\n"
+        "        pass\n"
+        "    elif value == option2:  # \u2190 edit\n"
+        "        pass\n"
+        "    else:\n"
+        "        pass\n"
     ),
     "for_loop": (
-        "        # --- for loop ---  \u2190 edit\n"
-        "        for i in range(10):  # \u2190 edit range\n"
-        "            pass  # \u2190 edit action\n"
+        "    # --- for loop ---  \u2190 edit\n"
+        "    for i in range(10):  # \u2190 edit range\n"
+        "        pass  # \u2190 edit action\n"
     ),
-    # Movement
-    "forward_speed": (
-        "        self.move(self.forward_speed)  # drive forward\n"
-    ),
-    "backward_speed": (
-        "        self.move(-self.backward_speed)  # reverse\n"
-    ),
-    "turn_speed": (
-        "        self.set_speed(self.turn_speed)  # set turn speed\n"
-    ),
-    "turn_clockwise": (
-        "        self.turn_cw(self.turn_cw_deg)  # turn CW\n"
-    ),
-    "turn_anti_clockwise": (
-        "        self.turn_acw(self.turn_acw_deg)  # turn ACW\n"
-    ),
-    "stop_movement": (
-        "        self.stop()  # stop robot\n"
-    ),
-    # Sensing
-    "obstacle_distance": (
-        "        if self.obstacle_in_front():  # check obstacle\n"
-        "            pass  # \u2190 edit action\n"
-    ),
-    "colour_detection": (
-        "        if self.detect_colour():  # detect colour\n"
-        "            pass  # \u2190 edit action\n"
-    ),
+    # Movement (Booster SDK)
+    "walk_forward":    "    walk_forward()  # walk forward\n",
+    "walk_backward":   "    walk_backward()  # walk backward\n",
+    "body_rotate_cw":  "    body_rotate_cw()  # rotate body clockwise\n",
+    "body_rotate_acw": "    body_rotate_acw()  # rotate body anti-clockwise\n",
+    "wave_left_hand":  "    wave_left_hand()  # wave left hand\n",
+    "wave_right_hand": "    wave_right_hand()  # wave right hand\n",
+    "wave_both_hands": "    wave_both_hands()  # wave both hands\n",
+    "head_rotate_cw":  "    head_rotate_cw()  # rotate head clockwise\n",
+    "head_rotate_acw": "    head_rotate_acw()  # rotate head anti-clockwise\n",
 }
 
 
@@ -250,6 +234,68 @@ class DeployWorker(QThread):
             err = stderr.read().decode()
             raise RuntimeError(f"Build failed: {err}")
         self.log.emit("  Build successful.")
+
+
+class SDKRunWorker(QThread):
+    """Launch SDK script on robot as a detached background process via nohup."""
+    log = pyqtSignal(str)
+    finished_ok = pyqtSignal()
+
+    def __init__(self, ssh_client, remote_path):
+        super().__init__()
+        self.ssh = ssh_client
+        self.remote_path = remote_path
+
+    def run(self):
+        try:
+            self.log.emit(f"Launching {self.remote_path} ...")
+            # Use nohup + & to fully detach from the SSH channel.
+            # The SDK's DDS layer crashes when bound to a paramiko channel;
+            # running detached avoids that entirely.
+            cmd = (
+                f"nohup bash -c '"
+                f"export FASTRTPS_DEFAULT_PROFILES_FILE=/opt/booster/BoosterRos2/fastdds_profile.xml; "
+                f"python3 {self.remote_path}' "
+                f"> /tmp/booster_sdk.log 2>&1 & echo $!"
+            )
+            _, stdout, _ = self.ssh.exec_command(cmd)
+            pid = stdout.read().decode(errors="replace").strip()
+            if pid.isdigit():
+                self.log.emit(f"  SDK script running (PID {pid})")
+            else:
+                self.log.emit(f"  SDK script launched")
+            self.finished_ok.emit()
+        except Exception as e:
+            self.log.emit(f"ERROR (sdk run): {e}")
+
+
+class SDKDeployWorker(QThread):
+    """Upload a standalone Booster SDK Python script to the robot (no build needed)."""
+    log = pyqtSignal(str)
+    finished_ok = pyqtSignal()
+
+    def __init__(self, ssh_client, script_content):
+        super().__init__()
+        self.ssh = ssh_client
+        self.script_content = script_content
+
+    def run(self):
+        try:
+            self._upload()
+            self.log.emit("SDK script deployed.")
+            self.finished_ok.emit()
+        except Exception as e:
+            self.log.emit(f"ERROR: {e}")
+
+    def _upload(self):
+        self.log.emit("Uploading Booster SDK script to robot...")
+        sftp = self.ssh.open_sftp()
+        stdin, stdout, stderr = self.ssh.exec_command(f"echo {REMOTE_SDK_SCRIPT}")
+        remote_path = stdout.read().decode().strip()
+        with sftp.open(remote_path, 'w') as f:
+            f.write(self.script_content)
+        sftp.close()
+        self.log.emit(f"  Uploaded to {remote_path}")
 
 
 class SSHCmdWorker(QThread):
@@ -735,6 +781,60 @@ def _draw_ai_circle_icon(size=36):
     painter.setPen(QColor("white"))
     painter.drawText(QRectF(0, 0, s, s), Qt.AlignmentFlag.AlignCenter, "AI")
     painter.end()
+    return QIcon(px)
+
+
+def _draw_play_icon(size=36):
+    """White circle outline with a solid white right-pointing triangle (play button)."""
+    scale = 2
+    px = QPixmap(size * scale, size * scale)
+    px.setDevicePixelRatio(scale)
+    px.fill(Qt.GlobalColor.transparent)
+    p = QPainter(px)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    s = float(size)
+    m = 2.0  # margin
+    # Circle outline
+    pen = QPen(QColor("white"))
+    pen.setWidthF(1.8)
+    p.setPen(pen)
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawEllipse(QRectF(m, m, s - 2 * m, s - 2 * m))
+    # Solid triangle — right-pointing, optically centred
+    cx, cy = s / 2.0, s / 2.0
+    r = (s / 2.0 - m) * 0.52        # triangle fits inside the ring
+    ox = r * 0.12                    # nudge right for visual balance
+    tip   = QPointF(cx + r + ox,       cy)
+    top   = QPointF(cx - r * 0.55 + ox, cy - r * 0.88)
+    bot   = QPointF(cx - r * 0.55 + ox, cy + r * 0.88)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QBrush(QColor("white")))
+    p.drawPolygon(QPolygonF([tip, top, bot]))
+    p.end()
+    return QIcon(px)
+
+
+def _draw_stop_icon(size=36):
+    """White circle outline with a solid white square inside (stop button)."""
+    scale = 2
+    px = QPixmap(size * scale, size * scale)
+    px.setDevicePixelRatio(scale)
+    px.fill(Qt.GlobalColor.transparent)
+    p = QPainter(px)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    s = float(size)
+    m = 2.0
+    pen = QPen(QColor("white"))
+    pen.setWidthF(1.8)
+    p.setPen(pen)
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawEllipse(QRectF(m, m, s - 2 * m, s - 2 * m))
+    sq = s * 0.15
+    cx, cy = s / 2.0, s / 2.0
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QBrush(QColor("white")))
+    p.drawRect(QRectF(cx - sq, cy - sq, sq * 2, sq * 2))
+    p.end()
     return QIcon(px)
 
 
@@ -1629,16 +1729,15 @@ class FunctionsPanel(QWidget):
             ("for_loop", "for_loop"),
         ]),
         ("Movement", [
-            ("move_forward", "forward_speed"),
-            ("move_backward", "backward_speed"),
-            ("set_turn_speed", "turn_speed"),
-            ("turn_clockwise", "turn_clockwise"),
-            ("turn_anti_clockwise", "turn_anti_clockwise"),
-            ("stop", "stop_movement"),
-        ]),
-        ("Sensing", [
-            ("check_obstacle", "obstacle_distance"),
-            ("detect_colour", "colour_detection"),
+            ("walk_forward", "walk_forward"),
+            ("walk_backward", "walk_backward"),
+            ("body_rotate_cw", "body_rotate_cw"),
+            ("body_rotate_acw", "body_rotate_acw"),
+            ("wave_left_hand", "wave_left_hand"),
+            ("wave_right_hand", "wave_right_hand"),
+            ("wave_both_hands", "wave_both_hands"),
+            ("head_rotate_cw", "head_rotate_cw"),
+            ("head_rotate_acw", "head_rotate_acw"),
         ]),
     ]
 
@@ -3150,6 +3249,7 @@ class RobotControlApp(QMainWindow):
         self._claude_api_key  = self._load_claude_api_key()
         self._sim_dialog = None
         self._syncing = False
+        self._sdk_running = False
         self._full_view_current_file = None
         self._fv_edit_mode = False
         self._blocking_item_changed = False
@@ -3379,37 +3479,6 @@ class RobotControlApp(QMainWindow):
         # --- Robot control group ---
         control_group = QGroupBox("Robot Control")
         control_layout = QVBoxLayout()
-
-        btn_row = QHBoxLayout()
-        btn_row.addStretch()
-
-        for btn_text, btn_style, btn_slot, btn_attr in [
-            ("Start",
-             "QPushButton { background-color: #34C759; color: white; padding: 8px; border-radius: 8px; }"
-             "QPushButton:disabled { background-color: #B0B0B0; color: #707070; border-radius: 8px; }",
-             self.start_robot, "start_btn"),
-            ("Stop",
-             "QPushButton { background-color: #FF3B30; color: white; padding: 8px; border-radius: 8px; }"
-             "QPushButton:disabled { background-color: #B0B0B0; color: #707070; border-radius: 8px; }",
-             self.stop_robot, "stop_btn"),
-            ("Restart",
-             "QPushButton { background-color: #007AFF; color: white; padding: 8px; border-radius: 8px; }"
-             "QPushButton:disabled { background-color: #B0B0B0; color: #707070; border-radius: 8px; }",
-             self.restart_robot, "restart_btn"),
-            ("Pause Robot",
-             "QPushButton { background-color: #FF9500; color: white; padding: 8px; border-radius: 8px; }"
-             "QPushButton:disabled { background-color: #B0B0B0; color: #707070; border-radius: 8px; }",
-             self.pause_movement, "pause_btn"),
-        ]:
-            btn = QPushButton(btn_text)
-            btn.setFixedWidth(130)
-            btn.setStyleSheet(btn_style)
-            btn.clicked.connect(btn_slot)
-            btn.setEnabled(False)
-            setattr(self, btn_attr, btn)
-            btn_row.addWidget(btn)
-        btn_row.addStretch()
-        control_layout.addLayout(btn_row)
 
         btn_row2 = QHBoxLayout()
         self.check_nodes_btn = QPushButton("Check ROS2 Nodes")
@@ -4523,6 +4592,24 @@ class RobotControlApp(QMainWindow):
         self._view_group.setExclusive(True)
         self._view_group.addButton(self.simple_view_btn)
         self._view_group.addButton(self.full_view_btn)
+
+        top_bar.addStretch()
+
+        # Simple View: play (run) button — centred between the two stretches
+        self.sv_run_btn = QPushButton()
+        self.sv_run_btn.setFixedSize(36, 36)
+        self.sv_run_btn.setIcon(_draw_play_icon(36))
+        self.sv_run_btn.setIconSize(QSize(30, 30))
+        self.sv_run_btn.setToolTip("Deploy & Run SDK script on robot")
+        self.sv_run_btn.setStyleSheet(
+            "QPushButton { background: transparent; border: none; border-radius: 18px; }"
+            "QPushButton:hover { background: rgba(255,255,255,18); }"
+            "QPushButton:pressed { background: rgba(255,255,255,35); }"
+            "QPushButton:disabled { opacity: 0.35; }"
+        )
+        self.sv_run_btn.setEnabled(False)
+        self.sv_run_btn.clicked.connect(self._toggle_sdk_run)
+        top_bar.addWidget(self.sv_run_btn)
 
         top_bar.addStretch()
 
@@ -5721,9 +5808,8 @@ class RobotControlApp(QMainWindow):
     def _autosave(self):
         """Auto-save: persist editor content to disk every 5 seconds."""
         if self.editor_stack.currentIndex() == 0:
-            # Simple View — write params + logic to testgo.py
-            self._write_params_to_movement_py()
-            self._write_simple_logic_to_movement_py()
+            # Simple View — save SDK script to sdk_program.py
+            self._save_simple_sdk_script()
         else:
             self._save_full_view_file()
 
@@ -5747,46 +5833,20 @@ class RobotControlApp(QMainWindow):
     # --- Simple View helpers ---
 
     def _generate_simple_code(self):
-        """Generate simplified ROS2-style code from current parameter values."""
-        fwd = self.forward_speed.value()
-        bwd = self.backward_speed.value()
-        turn = self.turn_speed.value()
-        obs = self.obstacle_distance.value()
-        cw = self.turn_cw.value()
-        acw = self.turn_acw.value()
-        hturn = self.head_turn_speed.value()
-        hcw = self.head_turn_cw.value()
-        hacw = self.head_turn_acw.value()
-        colour = self.colour_detection.currentText()
-
+        """Generate standalone Booster SDK Python script."""
         return (
-            f'import rclpy\n'
-            f'from rclpy.node import Node\n'
+            f'from booster_robotics_sdk_python import B1LocoClient, ChannelFactory\n'
+            f'from time import sleep\n'
             f'\n'
-            f'class Movement(Node):\n'
-            f'    def __init__(self):\n'
-            f'        super().__init__(\'movement\')\n'
-            f'        # === Editable Parameters ===\n'
-            f'        self.forward_speed = {fwd:.2f}       # m/s  \u2190 edit\n'
-            f'        self.backward_speed = {bwd:.2f}      # m/s  \u2190 edit\n'
-            f'        self.turn_speed = {turn:.2f}          # rad/s  \u2190 edit\n'
-            f'        self.obstacle_distance = {obs:.2f}   # metres  \u2190 edit\n'
-            f'        self.turn_cw_deg = {cw:.1f}         # degrees CW  \u2190 edit\n'
-            f'        self.turn_acw_deg = {acw:.1f}        # degrees ACW  \u2190 edit\n'
-            f'        self.head_turn_speed = {hturn:.2f}   # rad/s  \u2190 edit\n'
-            f'        self.head_turn_cw_deg = {hcw:.1f}   # degrees CW  \u2190 edit\n'
-            f'        self.head_turn_acw_deg = {hacw:.1f}  # degrees ACW  \u2190 edit\n'
-            f'        self.colour_detection = "{colour}"   # Red|Blue|Yellow|Green  \u2190 edit\n'
+            f'ChannelFactory.Instance().Init(0)\n'
+            f'client = B1LocoClient()\n'
+            f'client.Init()\n'
+            f'sleep(1.0)\n'
             f'\n'
-            f'    # vvv Drag and drop functions below vvv\n'
+            f'print(client.Move(0.0, 0.0, 0.3))  # rotate anti-clockwise\n'
             f'\n'
-            f'    def control_loop(self):\n'
-            f'        # === Movement Logic ===\n'
-            f'        if self.obstacle_in_front():\n'
-            f'            self.stop()                       # stop movement\n'
-            f'            self.turn_cw(self.turn_cw_deg)    # turn clockwise  \u2190 edit\n'
-            f'        else:\n'
-            f'            self.move(self.forward_speed)     # drive forward  \u2190 edit\n'
+            f'while True:\n'
+            f'    sleep(0.1)\n'
         )
 
     def _on_simple_code_changed(self):
@@ -6017,14 +6077,112 @@ class RobotControlApp(QMainWindow):
         with open(MOVEMENT_PY, 'w') as f:
             f.write(code)
 
+    def _save_simple_sdk_script(self):
+        """Save the Simple View SDK script content to sdk_program.py."""
+        script = self.simple_editor.toPlainText()
+        with open(SDK_SCRIPT_PY, 'w') as f:
+            f.write(script)
+
+    def _load_simple_sdk_script(self):
+        """Load SDK script from sdk_program.py, or generate a fresh default."""
+        if os.path.isfile(SDK_SCRIPT_PY):
+            with open(SDK_SCRIPT_PY, 'r') as f:
+                code = f.read()
+        else:
+            code = self._generate_simple_code()
+        self._syncing = True
+        try:
+            self.simple_editor.setPlainText(code)
+        finally:
+            self._syncing = False
+
+    def _toggle_sdk_run(self):
+        """Play/Stop toggle: start the SDK script or stop it."""
+        if self._sdk_running:
+            self._stop_sdk()
+        else:
+            self._start_sdk()
+
+    def _start_sdk(self):
+        """Deploy the SDK script then run it; switch button to Stop."""
+        if not self.ssh_client:
+            self._log("ERROR: Not connected to robot.")
+            return
+        self._save_simple_sdk_script()
+        self._sdk_running = True
+        self.sv_run_btn.setIcon(_draw_stop_icon(36))
+        self.sv_run_btn.setToolTip("Stop SDK script")
+        self._log("--- Deploying SDK script ---")
+        with open(SDK_SCRIPT_PY, 'r') as f:
+            script_content = f.read()
+
+        def _on_uploaded():
+            self._log("Running SDK script on robot ...")
+            w2 = SDKRunWorker(self.ssh_client, REMOTE_SDK_SCRIPT)
+            self._run_worker(w2)
+
+        w = SDKDeployWorker(self.ssh_client, script_content)
+        w.finished_ok.connect(_on_uploaded)
+        self._run_worker(w)
+
+    def _stop_sdk(self):
+        """Kill the running script and send a zero-velocity stop to the robot."""
+        if not self.ssh_client:
+            return
+        self._sdk_running = False
+        self.sv_run_btn.setIcon(_draw_play_icon(36))
+        self.sv_run_btn.setToolTip("Deploy & Run SDK script on robot")
+        self._log("Stopping SDK script ...")
+        # Kill running script, then send stop via nohup (same detach trick)
+        stop_script = (
+            "from booster_robotics_sdk_python import B1LocoClient, ChannelFactory\n"
+            "from time import sleep\n"
+            "ChannelFactory.Instance().Init(0)\n"
+            "c = B1LocoClient()\n"
+            "c.Init()\n"
+            "sleep(1.0)\n"
+            "c.Move(0.0, 0.0, 0.0)\n"
+            "sleep(2.0)\n"
+        )
+        stop_cmd = (
+            "pkill -f 'python3.*booster_program' 2>/dev/null || true; "
+            f"printf {repr(stop_script)} > /tmp/booster_stop.py; "
+            "nohup bash -c '"
+            "export FASTRTPS_DEFAULT_PROFILES_FILE=/opt/booster/BoosterRos2/fastdds_profile.xml; "
+            "python3 /tmp/booster_stop.py' "
+            "> /tmp/booster_stop.log 2>&1 &"
+        )
+        w = SSHCmdWorker(self.ssh_client, stop_cmd, "sdk stop")
+        self._run_worker(w)
+
+    def _on_sdk_finished(self):
+        """Called when the SDK script exits on its own — reset button to Play."""
+        if self._sdk_running:          # not already stopped by the user
+            self._sdk_running = False
+            self.sv_run_btn.setIcon(_draw_play_icon(36))
+            self.sv_run_btn.setToolTip("Deploy & Run SDK script on robot")
+            self._log("SDK script finished.")
+
+    def _deploy_sdk_script(self):
+        """Deploy the Booster SDK script to the robot via SFTP (no build step)."""
+        if not self.ssh_client:
+            self._log("ERROR: Not connected to robot.")
+            return
+        self._save_simple_sdk_script()
+        self.editor_deploy_btn.setEnabled(False)
+        self._log("--- Starting SDK deploy ---")
+        self.editor_deploy_btn.setText("Deploying...")
+        with open(SDK_SCRIPT_PY, 'r') as f:
+            script_content = f.read()
+        w = SDKDeployWorker(self.ssh_client, script_content)
+        w.log.connect(self._log)
+        w.finished.connect(lambda: self.editor_deploy_btn.setEnabled(True))
+        w.finished_ok.connect(self._flash_deploy_buttons)
+        self._run_worker(w)
+
     def _sync_simple_view_to_full_view(self):
-        """Persist Simple View params + logic to testgo.py and refresh Full View."""
-        self._write_params_to_movement_py()
-        self._write_simple_logic_to_movement_py()
-        # Reload Full View editor if testgo.py is the currently open file
-        if self._full_view_current_file == "movement_pkg/testgo.py":
-            with open(MOVEMENT_PY, 'r') as f:
-                self.full_editor.setPlainText(f.read())
+        """Save SDK script when leaving Simple View (Expert View is independent)."""
+        self._save_simple_sdk_script()
 
     def _show_simple_view(self):
         # If switching from Full View, save the file first
@@ -6037,10 +6195,11 @@ class RobotControlApp(QMainWindow):
         self.fv_delete_btn.hide()
         self.fv_search_btn.hide()
         self.fv_ai_btn.hide()
+        self.sv_run_btn.show()
         self._fv_search_bar.hide()
         self._fv_search_input.clear()
-        # Load persisted logic from testgo.py
-        self._load_simple_view_from_movement_py()
+        # Load persisted SDK script (or generate default)
+        self._load_simple_sdk_script()
 
     def _show_full_view(self):
         # If switching from Simple View, sync changes to testgo.py and reload
@@ -6049,6 +6208,7 @@ class RobotControlApp(QMainWindow):
         self.editor_stack.setCurrentIndex(1)
         self.full_view_btn.setChecked(True)
         self.simple_view_btn.setChecked(False)
+        self.sv_run_btn.hide()
         self.fv_add_btn.show()
         self.fv_delete_btn.show()
         self.fv_search_btn.show()
@@ -6287,17 +6447,16 @@ class RobotControlApp(QMainWindow):
     def _deploy_from_editor(self):
         """Save & Deploy triggered from Code Editor tab."""
         if self.editor_stack.currentIndex() == 0:
-            # Simple View — write params + logic to testgo.py before deploy
-            self._write_params_to_movement_py()
-            self._write_simple_logic_to_movement_py()
+            # Simple View — deploy standalone Booster SDK script (no ROS2 build)
+            self._deploy_sdk_script()
         else:
-            # Full View — save current file to disk first
+            # Full View — save current file to disk first, then ROS2 deploy
             self._save_full_view_file()
             # If testgo.py was edited, reload params from it
             if (self._full_view_current_file
                     and self._full_view_current_file.endswith("testgo.py")):
                 self._load_params()
-        self.deploy()
+            self.deploy()
 
     # ------------------------------------------------------------------ #
     #  Shared logic                                                        #
@@ -6312,11 +6471,8 @@ class RobotControlApp(QMainWindow):
         self.deploy_btn.setEnabled(enabled)
         self.editor_deploy_btn.setEnabled(enabled)
         self.canvas_deploy_btn.setEnabled(enabled)
+        self.sv_run_btn.setEnabled(enabled)
         # save buttons (save_btn, editor_save_btn, canvas_save_btn) are always enabled
-        self.start_btn.setEnabled(enabled)
-        self.stop_btn.setEnabled(enabled)
-        self.restart_btn.setEnabled(enabled)
-        self.pause_btn.setEnabled(enabled)
         self.check_nodes_btn.setEnabled(enabled)
         self.check_topics_btn.setEnabled(enabled)
         self.get_robot_logs_btn.setEnabled(enabled)
@@ -6379,6 +6535,10 @@ class RobotControlApp(QMainWindow):
         )
 
     def do_disconnect(self):
+        if self._sdk_running:
+            self._sdk_running = False
+            self.sv_run_btn.setIcon(_draw_play_icon(36))
+            self.sv_run_btn.setToolTip("Deploy & Run SDK script on robot")
         if self.ssh_client:
             try:
                 self.ssh_client.close()
@@ -6659,7 +6819,7 @@ class RobotControlApp(QMainWindow):
         finally:
             self._syncing = False
 
-        self._load_simple_view_from_movement_py()
+        self._load_simple_sdk_script()
         self._log("Loaded parameters from testgo.py")
 
     def _flash_save_buttons(self):
@@ -6704,15 +6864,14 @@ class RobotControlApp(QMainWindow):
     def save(self):
         """Save current changes to the local project folder."""
         self._write_params_to_movement_py()
-        self._write_simple_logic_to_movement_py()
         self._log("Saved to project folder.")
         self._flash_save_buttons()
 
     def _save_from_editor(self):
         """Save triggered from Code Editor tab — no SSH required."""
         if self.editor_stack.currentIndex() == 0:
-            self._write_params_to_movement_py()
-            self._write_simple_logic_to_movement_py()
+            # Simple View — save Booster SDK script
+            self._save_simple_sdk_script()
         else:
             self._save_full_view_file()
             if (self._full_view_current_file
@@ -8111,6 +8270,11 @@ Window Geometry:
         subprocess.run(["git", "remote", "add", "origin", auth_url],
                        cwd=_PKG_DIR, capture_output=True)
 
+        # Remove stale index lock if a previous git process crashed
+        lock_file = os.path.join(_PKG_DIR, ".git", "index.lock")
+        if os.path.exists(lock_file):
+            os.remove(lock_file)
+
         self._log("Running: git add .")
         subprocess.run(["git", "add", "."], cwd=_PKG_DIR, capture_output=True)
 
@@ -8128,6 +8292,9 @@ Window Geometry:
         else:
             self._log("git commit: OK")
 
+        # Stash any remaining changes so pull --rebase can proceed cleanly
+        subprocess.run(["git", "stash"], cwd=_PKG_DIR, capture_output=True)
+
         self._log(f"Running: git pull --rebase origin {branch}")
         r = subprocess.run(
             ["git", "pull", "--rebase", "origin", branch],
@@ -8141,6 +8308,9 @@ Window Geometry:
             self._log(f"ERROR: git pull --rebase failed (exit code {r.returncode})")
         else:
             self._log("git pull --rebase: OK")
+
+        # Restore any stashed changes
+        subprocess.run(["git", "stash", "pop"], cwd=_PKG_DIR, capture_output=True)
 
         self._log(f"Running: git push -u origin HEAD:{branch}")
         r = subprocess.run(
