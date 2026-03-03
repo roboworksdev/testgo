@@ -25,5 +25,7 @@ def do_move(vx, vy, vz, duration=2.0):
 
 while True:
     pass  # ← drag a function here
-    do_move(0.0, 0.0, -0.2, 4.0)  # rotate clockwise for 2.0s
-    do_move(0.0, 0.0,  0.3, 2.0)  # rotate anti-clockwise for 2.0s
+    do_move(0.0, 0.0, -0.2, 5.0)  # rotate clockwise for 2.0s
+    do_move(0.0, 0.0,  0.3, 8.0)  # rotate anti-clockwise for 2.0s
+    do_move(0.8, 0.0,  0.0, 3.0)  # walk forward for 2.0s
+    do_move(-0.2, 0.0, 0.0, 2.0)  # walk backward for 2.0s
