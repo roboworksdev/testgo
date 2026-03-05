@@ -161,31 +161,33 @@ _SIMPLE_VIEW_SNIPPETS = {
         "        sleep(0.1)\n"
     ),
     "wave_left_hand": (
-        "    # stop and stabilise — stay in kWalking, no mode change\n"
-        "    for _ in range(30):\n"
-        "        client.Move(0.0, 0.0, 0.0)\n"
-        "        sleep(0.1)\n"
-        "    # raise left hand (kWalking + V1, no ChangeMode, no SwitchHEC)\n"
-        "    _p = Posture()\n"
-        "    _p.orientation = Orientation(0.0, 0.0, 0.0)\n"
-        "    _p.position = Position(0.25, 0.30, 0.20)  # raise hand\n"
-        "    client.MoveHandEndEffector(_p, 1500, B1HandIndex.kLeftHand)\n"
-        "    sleep(1.5)\n"
-        "    for _ in range(3):\n"
-        "        _p.position = Position(0.25, 0.38, 0.18)  # wave out\n"
-        "        client.MoveHandEndEffector(_p, 500, B1HandIndex.kLeftHand)\n"
-        "        sleep(0.5)\n"
-        "        _p.position = Position(0.25, 0.22, 0.18)  # wave in\n"
-        "        client.MoveHandEndEffector(_p, 500, B1HandIndex.kLeftHand)\n"
-        "        sleep(0.5)\n"
-        "    _p.position = Position(0.28, 0.25, 0.05)  # lower hand\n"
-        "    client.MoveHandEndEffector(_p, 1500, B1HandIndex.kLeftHand)\n"
-        "    sleep(1.5)\n"
+        "    # wave left hand\n"
+        "    _wave_hand(B1HandIndex.kLeftHand, raise_z=0.20, lower_z=0.05, reps=2)\n"
     ),
-    "wave_right_hand": "    wave_right_hand()  # wave right hand\n",
-    "wave_both_hands": "    wave_both_hands()  # wave both hands\n",
-    "head_rotate_cw":  "    head_rotate_cw()  # rotate head clockwise\n",
-    "head_rotate_acw": "    head_rotate_acw()  # rotate head anti-clockwise\n",
+    "wave_right_hand": (
+        "    # wave right hand\n"
+        "    _wave_hand(B1HandIndex.kRightHand, raise_z=0.20, lower_z=0.05, reps=2)\n"
+    ),
+    "wave_both_hands": (
+        "    # wave both hands simultaneously\n"
+        "    _wave_both_hands(raise_z=0.20, lower_z=0.05, reps=2)\n"
+    ),
+    "head_rotate_cw": (
+        "    # head rotate clockwise (right)\n"
+        "    _move_head(yaw=-0.785, hold=1.5)\n"
+    ),
+    "head_rotate_acw": (
+        "    # head rotate anti-clockwise (left)\n"
+        "    _move_head(yaw=0.785, hold=1.5)\n"
+    ),
+    "head_up": (
+        "    # head up\n"
+        "    _move_head(pitch=-0.3, hold=1.5)\n"
+    ),
+    "head_down": (
+        "    # head down\n"
+        "    _move_head(pitch=1.0, hold=1.5)\n"
+    ),
 }
 
 
@@ -1778,8 +1780,111 @@ class DraggableFunctionButton(QPushButton):
         super().mouseMoveEvent(event)
 
 
+_CUSTOM_FUNC_TEMPLATE = """def my_function():
+    # ── Rename this function ─────────────────────────────────────
+    # Change "my_function" above to a descriptive name.
+
+    # ── Parameters ───────────────────────────────────────────────
+    # Adjust these values to tune the behaviour
+    speed    = 0.3    # movement speed (m/s)
+    duration = 2.0    # how long to run (seconds)
+
+    # ── Your code below ──────────────────────────────────────────
+    # Available SDK calls:
+    #   client.Move(vx, vy, vyaw)                — walk / turn
+    #   client.RotateHead(pitch, yaw)             — move head
+    #   _wave_hand(hand, raise_z, lower_z, reps)  — wave arm
+    #   _move_head(pitch, yaw, hold)              — head + return
+    #   sleep(seconds)                            — pause
+    #
+    # Example: walk forward for `duration` seconds then stop
+    for _ in range(int(duration / 0.1)):
+        client.Move(speed, 0.0, 0.0)
+        sleep(0.1)
+    for _ in range(10):
+        client.Move(0.0, 0.0, 0.0)
+        sleep(0.1)
+"""
+
+
+class NewFunctionDialog(QDialog):
+    """Modal dialog for creating a custom draggable function."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("New Function")
+        self.setWindowModality(Qt.WindowModality.ApplicationModal)
+        self.setMinimumSize(560, 480)
+        self.resize(620, 540)
+        self._func_name = None
+        self._func_code = None
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+
+        hint = QLabel("Define your function below, then click Save.")
+        hint.setStyleSheet("color: #555555; font-size: 12px;")
+        layout.addWidget(hint)
+
+        self._editor = QPlainTextEdit()
+        self._editor.setFont(QFont("Menlo", 12))
+        self._editor.setPlainText(_CUSTOM_FUNC_TEMPLATE)
+        self._highlighter = SimpleCodeHighlighter(self._editor.document())
+        layout.addWidget(self._editor)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setFixedWidth(90)
+        cancel_btn.setStyleSheet(
+            "QPushButton { padding: 6px 16px; border-radius: 8px;"
+            " background-color: #E5E5EA; color: #1A1A1A; }"
+            "QPushButton:hover { background-color: #D1D1D6; }"
+        )
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(cancel_btn)
+
+        btn_row.addSpacing(8)
+
+        save_btn = QPushButton("Save")
+        save_btn.setFixedWidth(90)
+        save_btn.setStyleSheet(
+            "QPushButton { padding: 6px 16px; border-radius: 8px;"
+            " background-color: #34C759; color: white; font-weight: bold; }"
+            "QPushButton:hover { background-color: #28A745; }"
+        )
+        save_btn.clicked.connect(self._on_save)
+        btn_row.addWidget(save_btn)
+
+        layout.addLayout(btn_row)
+
+    def _on_save(self):
+        code = self._editor.toPlainText().strip()
+        m = re.match(r'def\s+(\w+)\s*\(', code)
+        if not m:
+            QMessageBox.warning(
+                self, "Invalid Function",
+                "Could not find a function definition.\n"
+                "Make sure your code starts with \'def function_name():\'."
+            )
+            return
+        self._func_name = m.group(1)
+        self._func_code = code
+        self.accept()
+
+    @property
+    def func_name(self): return self._func_name
+
+    @property
+    def func_code(self): return self._func_code
+
+
 class FunctionsPanel(QWidget):
     """Left-side panel listing draggable function blocks grouped by category."""
+
+    add_custom_requested    = pyqtSignal()
+    remove_custom_requested = pyqtSignal(str, str)  # (name, func_code)
 
     _CATEGORIES = [
         ("Control", [
@@ -1799,6 +1904,8 @@ class FunctionsPanel(QWidget):
             ("wave_both_hands", "wave_both_hands"),
             ("head_rotate_cw", "head_rotate_cw"),
             ("head_rotate_acw", "head_rotate_acw"),
+            ("head_up", "head_up"),
+            ("head_down", "head_down"),
         ]),
     ]
 
@@ -1825,7 +1932,123 @@ class FunctionsPanel(QWidget):
                 )
                 layout.addWidget(btn)
 
+        # Custom functions section
+        self._custom_header = QLabel("Custom")
+        self._custom_header.setFont(QFont("Menlo", 11, QFont.Weight.Bold))
+        self._custom_header.setStyleSheet("margin-top: 8px; color: #555555;")
+        self._custom_header.hide()
+        layout.addWidget(self._custom_header)
+
+        self._custom_funcs = []   # list of (name, func_code, row_widget, x_btn)
+        self._delete_mode = False
+        self._custom_section = QWidget()
+        self._custom_layout = QVBoxLayout(self._custom_section)
+        self._custom_layout.setContentsMargins(0, 0, 0, 0)
+        self._custom_layout.setSpacing(4)
+        layout.addWidget(self._custom_section)
+
         layout.addStretch()
+
+        # "+" / "−" buttons — bottom left
+        add_btn = QPushButton("+")
+        add_btn.setToolTip("Create a custom function")
+        add_btn.setFixedSize(32, 32)
+        add_btn.setStyleSheet(
+            "QPushButton { background-color: #007AFF; color: white; font-size: 20px;"
+            " border-radius: 16px; padding: 0; line-height: 32px; }"
+            "QPushButton:hover { background-color: #0062CC; }"
+        )
+        add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        add_btn.clicked.connect(self.add_custom_requested)
+
+        self._remove_btn = QPushButton("−")
+        self._remove_btn.setToolTip("Toggle delete mode")
+        self._remove_btn.setFixedSize(32, 32)
+        self._remove_btn.setEnabled(False)
+        self._remove_btn.setStyleSheet(
+            "QPushButton { background-color: #FF3B30; color: white; font-size: 22px;"
+            " border-radius: 16px; padding: 0; line-height: 32px; }"
+            "QPushButton:hover { background-color: #D0281F; }"
+            "QPushButton:disabled { background-color: #C7C7CC; color: #F2F2F7; }"
+        )
+        self._remove_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._remove_btn.clicked.connect(self._toggle_delete_mode)
+
+        bottom_row = QHBoxLayout()
+        bottom_row.addWidget(add_btn)
+        bottom_row.addSpacing(6)
+        bottom_row.addWidget(self._remove_btn)
+        bottom_row.addStretch()
+        layout.addLayout(bottom_row)
+
+    def add_custom_button(self, name, snippet, func_code=""):
+        """Add a new draggable button with a hidden × delete button on the right."""
+        self._custom_header.show()
+
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(4)
+
+        drag_btn = DraggableFunctionButton(name, snippet)
+        row_layout.addWidget(drag_btn, stretch=1)
+
+        x_btn = QPushButton("×")
+        x_btn.setFixedSize(24, 24)
+        x_btn.setStyleSheet(
+            "QPushButton { background-color: #FF3B30; color: white; font-size: 14px;"
+            " font-weight: bold; border-radius: 12px; padding: 0; }"
+            "QPushButton:hover { background-color: #D0281F; }"
+        )
+        x_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        x_btn.hide()
+        x_btn.clicked.connect(lambda _checked, n=name, fc=func_code, r=row: self._remove_single(n, fc, r))
+        row_layout.addWidget(x_btn)
+
+        self._custom_layout.addWidget(row)
+        self._custom_funcs.append((name, func_code, row, x_btn))
+        self._remove_btn.setEnabled(True)
+
+        # If already in delete mode, show the new × immediately
+        if self._delete_mode:
+            x_btn.show()
+
+    def _toggle_delete_mode(self):
+        """Show or hide the × buttons on all custom function rows."""
+        self._delete_mode = not self._delete_mode
+        for _name, _fc, _row, x_btn in self._custom_funcs:
+            x_btn.setVisible(self._delete_mode)
+        # Visually indicate active delete mode with a darker tint
+        if self._delete_mode:
+            self._remove_btn.setStyleSheet(
+                "QPushButton { background-color: #A0201A; color: white; font-size: 22px;"
+                " border-radius: 16px; padding: 0; line-height: 32px; }"
+                "QPushButton:hover { background-color: #8B1A15; }"
+            )
+        else:
+            self._remove_btn.setStyleSheet(
+                "QPushButton { background-color: #FF3B30; color: white; font-size: 22px;"
+                " border-radius: 16px; padding: 0; line-height: 32px; }"
+                "QPushButton:hover { background-color: #D0281F; }"
+                "QPushButton:disabled { background-color: #C7C7CC; color: #F2F2F7; }"
+            )
+
+    def _remove_single(self, name, func_code, row):
+        """Remove one custom function entry and notify the main window."""
+        self._custom_funcs = [t for t in self._custom_funcs if t[0] != name]
+        self._custom_layout.removeWidget(row)
+        row.deleteLater()
+        if not self._custom_funcs:
+            self._custom_header.hide()
+            self._delete_mode = False
+            self._remove_btn.setEnabled(False)
+            self._remove_btn.setStyleSheet(
+                "QPushButton { background-color: #FF3B30; color: white; font-size: 22px;"
+                " border-radius: 16px; padding: 0; line-height: 32px; }"
+                "QPushButton:hover { background-color: #D0281F; }"
+                "QPushButton:disabled { background-color: #C7C7CC; color: #F2F2F7; }"
+            )
+        self.remove_custom_requested.emit(name, func_code)
 
 
 # --- Code editor with line numbers ---
@@ -1959,6 +2182,27 @@ class SimpleViewEditor(LineNumberEditor):
         self.setTextCursor(cursor)
         event.acceptProposedAction()
 
+    def keyPressEvent(self, event):
+        """Block editing keys when the cursor is inside the header section."""
+        from PyQt6.QtCore import Qt
+        logic_line = self._logic_start_line()
+        if logic_line is not None:
+            cursor = self.textCursor()
+            anchor_block = self.document().findBlock(cursor.anchor()).blockNumber()
+            pos_block = self.document().findBlock(cursor.position()).blockNumber()
+            if min(anchor_block, pos_block) < logic_line:
+                key = event.key()
+                mods = event.modifiers()
+                ctrl = bool(mods & Qt.KeyboardModifier.ControlModifier)
+                nav_keys = {
+                    Qt.Key.Key_Up, Qt.Key.Key_Down, Qt.Key.Key_Left, Qt.Key.Key_Right,
+                    Qt.Key.Key_Home, Qt.Key.Key_End, Qt.Key.Key_PageUp, Qt.Key.Key_PageDown,
+                }
+                if key in nav_keys or (ctrl and key in (Qt.Key.Key_C, Qt.Key.Key_A)):
+                    super().keyPressEvent(event)
+                return
+        super().keyPressEvent(event)
+
 
 # --- Syntax highlighter for Simple View ---
 
@@ -1995,13 +2239,17 @@ class SimpleCodeHighlighter(QSyntaxHighlighter):
         self._drop_guide_fmt.setForeground(QColor("#FF0000"))
         self._drop_guide_fmt.setFontWeight(QFont.Weight.Bold)
 
+        self._drag_hint_fmt = QTextCharFormat()
+        self._drag_hint_fmt.setForeground(QColor("#28A745"))
+        self._drag_hint_fmt.setFontWeight(QFont.Weight.Bold)
+
     def highlightBlock(self, text):
         stripped = text.lstrip()
 
         # Full-line comments
         if stripped.startswith('#'):
-            # Drag-and-drop guide line — red + bold
-            if 'Drag and drop' in text:
+            # Drag-and-drop guide line or warning banner — red + bold
+            if 'Drag and drop' in text or '⚠' in text or '───' in text:
                 self.setFormat(0, len(text), self._drop_guide_fmt)
             else:
                 self.setFormat(0, len(text), self._comment_fmt)
@@ -2027,7 +2275,10 @@ class SimpleCodeHighlighter(QSyntaxHighlighter):
         # Inline comments
         idx = text.find('#')
         if idx > 0:
-            self.setFormat(idx, len(text) - idx, self._comment_fmt)
+            if '\u2190 drag a function here' in text:
+                self.setFormat(idx, len(text) - idx, self._drag_hint_fmt)
+            else:
+                self.setFormat(idx, len(text) - idx, self._comment_fmt)
 
         # "← edit" marker in bright orange-red (overrides comment grey)
         edit_idx = text.find('\u2190 edit')
@@ -4800,10 +5051,12 @@ class RobotControlApp(QMainWindow):
         # --- Simple View (splitter: functions panel | code editor) ---
         simple_view_splitter = QSplitter(Qt.Orientation.Horizontal)
 
-        functions_panel = FunctionsPanel()
+        self.functions_panel = FunctionsPanel()
+        self.functions_panel.add_custom_requested.connect(self._on_add_custom_function)
+        self.functions_panel.remove_custom_requested.connect(self._on_remove_custom_function)
         func_scroll = QScrollArea()
         func_scroll.setWidgetResizable(True)
-        func_scroll.setWidget(functions_panel)
+        func_scroll.setWidget(self.functions_panel)
         func_scroll.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
@@ -4813,9 +5066,7 @@ class RobotControlApp(QMainWindow):
         self.simple_editor = SimpleViewEditor()
         self.simple_editor.setFont(QFont("Menlo", 13))
         self.simple_editor.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
-        self._simple_highlighter = SimpleCodeHighlighter(
-            self.simple_editor.document()
-        )
+        self._simple_highlighter = SimpleCodeHighlighter(self.simple_editor.document())
         self.simple_editor.textChanged.connect(self._on_simple_code_changed)
         simple_view_splitter.addWidget(self.simple_editor)
 
@@ -5045,6 +5296,53 @@ class RobotControlApp(QMainWindow):
         vbox.addWidget(btn, 0, Qt.AlignmentFlag.AlignHCenter)
         vbox.addWidget(lbl, 0, Qt.AlignmentFlag.AlignHCenter)
         return container, btn
+
+    def _on_add_custom_function(self):
+        """Open NewFunctionDialog and inject the result into the editor."""
+        dlg = NewFunctionDialog(self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        name = dlg.func_name
+        func_code = dlg.func_code
+        # Insert the function definition above the warning banner
+        _banner = (
+            '# ' + '─' * 55 + '\n'
+            '# ⚠  DO NOT EDIT above this line — auto-generated header\n'
+            '# ' + '─' * 55 + '\n'
+        )
+        current = self.simple_editor.toPlainText()
+        insert_before = _banner if _banner in current else 'while True:\n'
+        new_content = current.replace(
+            insert_before, func_code + '\n\n' + insert_before, 1
+        )
+        self._syncing = True
+        try:
+            self.simple_editor.setPlainText(new_content)
+        finally:
+            self._syncing = False
+        self._save_simple_sdk_script()
+        snippet = f'    {name}()  # custom function\n'
+        self.functions_panel.add_custom_button(name, snippet, func_code)
+
+    def _on_remove_custom_function(self, name, func_code):
+        """Remove a custom function definition from the editor and sdk_program.py."""
+        current = self.simple_editor.toPlainText()
+        # Remove the function block: from "def name(" to the blank line after it
+        import re as _re
+        # Match from def line to the next blank line (or end of string)
+        pattern = _re.compile(
+            r'(?m)^def ' + _re.escape(name) + r'\b.*?\n(?=\n|(?=def |#))',
+            _re.DOTALL
+        )
+        new_content = pattern.sub("", current, count=1)
+        # Clean up any double-blank lines left behind
+        new_content = _re.sub(r'\n{3,}', '\n\n', new_content)
+        self._syncing = True
+        try:
+            self.simple_editor.setPlainText(new_content)
+        finally:
+            self._syncing = False
+        self._save_simple_sdk_script()
 
     def _build_roboapps_tab(self):
         tab = QWidget()
@@ -5932,6 +6230,43 @@ class RobotControlApp(QMainWindow):
             f'signal.signal(signal.SIGTERM, _on_stop)\n'
             f'signal.signal(signal.SIGINT, _on_stop)\n'
             f'\n'
+            f'def _wave_hand(hand, raise_z=0.20, lower_z=0.05, reps=2):\n'
+            f'    s = 1 if hand == B1HandIndex.kLeftHand else -1\n'
+            f'    for _ in range(10):\n'
+            f'        client.Move(0.0, 0.0, 0.0)\n'
+            f'        sleep(0.1)\n'
+            f'    _p = Posture()\n'
+            f'    _p.orientation = Orientation(0.0, 0.0, 0.0)\n'
+            f'    _p.position = Position(0.25, s * 0.30, raise_z)\n'
+            f'    client.MoveHandEndEffector(_p, 1000, hand)\n'
+            f'    sleep(1.0)\n'
+            f'    for _ in range(reps):\n'
+            f'        _p.position = Position(0.25, s * 0.38, raise_z)\n'
+            f'        client.MoveHandEndEffector(_p, 500, hand)\n'
+            f'        sleep(0.5)\n'
+            f'        _p.position = Position(0.25, s * 0.22, raise_z)\n'
+            f'        client.MoveHandEndEffector(_p, 500, hand)\n'
+            f'        sleep(0.5)\n'
+            f'    _p.position = Position(0.28, s * 0.25, lower_z)\n'
+            f'    client.MoveHandEndEffector(_p, 1000, hand)\n'
+            f'    sleep(1.0)\n'
+            f'\n'
+            f'def _move_head(pitch=0.0, yaw=0.0, hold=1.5):\n'
+            f'    client.RotateHead(pitch, yaw)\n'
+            f'    sleep(hold)\n'
+            f'    client.RotateHead(0.0, 0.0)\n'
+            f'    sleep(0.5)\n'
+            f'\n'
+            f'def _wave_both_hands(raise_z=0.20, lower_z=0.05, reps=3):\n'
+            f'    import threading\n'
+            f'    tl = threading.Thread(target=_wave_hand, args=(B1HandIndex.kLeftHand,), kwargs={{"raise_z": raise_z, "lower_z": lower_z, "reps": reps}})\n'
+            f'    tr = threading.Thread(target=_wave_hand, args=(B1HandIndex.kRightHand,), kwargs={{"raise_z": raise_z, "lower_z": lower_z, "reps": reps}})\n'
+            f'    tl.start(); tr.start()\n'
+            f'    tl.join(); tr.join()\n'
+            f'\n'
+            f'# \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n'
+            f'# \u26a0  DO NOT EDIT above this line \u2014 auto-generated header\n'
+            f'# \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n'
             f'while True:\n'
             f'    pass  # \u2190 drag a function here\n'
         )
@@ -6176,8 +6511,23 @@ class RobotControlApp(QMainWindow):
         if os.path.isfile(SDK_SCRIPT_PY):
             with open(SDK_SCRIPT_PY, 'r') as f:
                 code = f.read()
-        # Regenerate if the script is outdated (missing current version marker)
-        if not code or '# TestGo SDK v6' not in code:
+        # Regenerate if outdated or has syntax errors
+        _needs_regen = not code or '# TestGo SDK v6' not in code
+        if not _needs_regen:
+            import py_compile, tempfile
+            _tmp = tempfile.mktemp(suffix='.py')
+            try:
+                with open(_tmp, 'w') as _f:
+                    _f.write(code)
+                py_compile.compile(_tmp, doraise=True)
+            except py_compile.PyCompileError:
+                _needs_regen = True
+            finally:
+                try:
+                    import os as _os; _os.remove(_tmp)
+                except Exception:
+                    pass
+        if _needs_regen:
             code = self._generate_simple_code()
             with open(SDK_SCRIPT_PY, 'w') as f:
                 f.write(code)
@@ -6186,6 +6536,74 @@ class RobotControlApp(QMainWindow):
         new_import = '    B1HandIndex, Position, Orientation, Posture, RobotMode,\n'
         if old_import in code:
             code = code.replace(old_import, new_import)
+            with open(SDK_SCRIPT_PY, 'w') as f:
+                f.write(code)
+        # Patch missing warning banner above while True:
+        _warning_banner = (
+            '# ' + '─' * 55 + '\n'
+            '# ⚠  DO NOT EDIT above this line — auto-generated header\n'
+            '# ' + '─' * 55 + '\n'
+        )
+        if _warning_banner not in code and 'while True:' in code:
+            code = code.replace('while True:\n', _warning_banner + 'while True:\n', 1)
+            with open(SDK_SCRIPT_PY, 'w') as f:
+                f.write(code)
+        # Patch missing _wave_hand helper
+        if 'def _wave_hand(' not in code and 'while True:' in code:
+            _wave_fn = (
+                'def _wave_hand(hand, raise_z=0.20, lower_z=0.05, reps=2):\n'
+                '    s = 1 if hand == B1HandIndex.kLeftHand else -1\n'
+                '    for _ in range(10):\n'
+                '        client.Move(0.0, 0.0, 0.0)\n'
+                '        sleep(0.1)\n'
+                '    _p = Posture()\n'
+                '    _p.orientation = Orientation(0.0, 0.0, 0.0)\n'
+                '    _p.position = Position(0.25, s * 0.30, raise_z)\n'
+                '    client.MoveHandEndEffector(_p, 1000, hand)\n'
+                '    sleep(1.0)\n'
+                '    for _ in range(reps):\n'
+                '        _p.position = Position(0.25, s * 0.38, raise_z)\n'
+                '        client.MoveHandEndEffector(_p, 500, hand)\n'
+                '        sleep(0.5)\n'
+                '        _p.position = Position(0.25, s * 0.22, raise_z)\n'
+                '        client.MoveHandEndEffector(_p, 500, hand)\n'
+                '        sleep(0.5)\n'
+                '    _p.position = Position(0.28, s * 0.25, lower_z)\n'
+                '    client.MoveHandEndEffector(_p, 1000, hand)\n'
+                '    sleep(1.0)\n'
+                '\n'
+            )
+            insert_before = _warning_banner if _warning_banner in code else 'while True:\n'
+            code = code.replace(insert_before, _wave_fn + insert_before, 1)
+            with open(SDK_SCRIPT_PY, 'w') as f:
+                f.write(code)
+        # Patch missing _move_head helper
+        if 'def _move_head(' not in code and 'while True:' in code:
+            _move_head_fn = (
+                'def _move_head(pitch=0.0, yaw=0.0, hold=1.5):\n'
+                '    client.RotateHead(pitch, yaw)\n'
+                '    sleep(hold)\n'
+                '    client.RotateHead(0.0, 0.0)\n'
+                '    sleep(0.5)\n'
+                '\n'
+            )
+            insert_before = _warning_banner if _warning_banner in code else 'while True:\n'
+            code = code.replace(insert_before, _move_head_fn + insert_before, 1)
+            with open(SDK_SCRIPT_PY, 'w') as f:
+                f.write(code)
+        # Patch missing _wave_both_hands helper
+        if 'def _wave_both_hands(' not in code and 'while True:' in code:
+            _wave_both_fn = (
+                'def _wave_both_hands(raise_z=0.20, lower_z=0.05, reps=3):\n'
+                '    import threading\n'
+                '    tl = threading.Thread(target=_wave_hand, args=(B1HandIndex.kLeftHand,), kwargs={"raise_z": raise_z, "lower_z": lower_z, "reps": reps})\n'
+                '    tr = threading.Thread(target=_wave_hand, args=(B1HandIndex.kRightHand,), kwargs={"raise_z": raise_z, "lower_z": lower_z, "reps": reps})\n'
+                '    tl.start(); tr.start()\n'
+                '    tl.join(); tr.join()\n'
+                '\n'
+            )
+            insert_before = _warning_banner if _warning_banner in code else 'while True:\n'
+            code = code.replace(insert_before, _wave_both_fn + insert_before, 1)
             with open(SDK_SCRIPT_PY, 'w') as f:
                 f.write(code)
         self._syncing = True
