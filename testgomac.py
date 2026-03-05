@@ -117,13 +117,71 @@ _SIMPLE_VIEW_SNIPPETS = {
         "    for i in range(10):  # \u2190 edit range\n"
         "        pass  # \u2190 edit action\n"
     ),
-    # Movement (Booster SDK) — duration in seconds, edit to change timing
-    "stop":            "    do_move(0.0, 0.0,  0.0, 2.0)  # stop robot for 2.0s\n",
-    "walk_forward":    "    do_move(0.8, 0.0,  0.0, 2.0)  # walk forward for 2.0s\n",
-    "walk_backward":   "    do_move(-0.2, 0.0, 0.0, 2.0)  # walk backward for 2.0s\n",
-    "body_rotate_cw":  "    do_move(0.0, 0.0, -0.2, 2.0)  # rotate clockwise for 2.0s\n",
-    "body_rotate_acw": "    do_move(0.0, 0.0,  0.3, 2.0)  # rotate anti-clockwise for 2.0s\n",
-    "wave_left_hand":  "    wave_left_hand()  # wave left hand\n",
+    # Movement (Booster SDK) — edit range(N) to change duration: N * 0.1s
+    "stop": (
+        "    # stop robot for 2.0s\n"
+        "    for _ in range(20):\n"
+        "        client.Move(0.0, 0.0, 0.0)\n"
+        "        sleep(0.1)\n"
+    ),
+    "walk_forward": (
+        "    # walk forward for 2.0s\n"
+        "    for _ in range(20):\n"
+        "        client.Move(0.8, 0.0, 0.0)\n"
+        "        sleep(0.1)\n"
+        "    for _ in range(10):  # decelerate\n"
+        "        client.Move(0.0, 0.0, 0.0)\n"
+        "        sleep(0.1)\n"
+    ),
+    "walk_backward": (
+        "    # walk backward for 2.0s\n"
+        "    for _ in range(20):\n"
+        "        client.Move(-0.2, 0.0, 0.0)\n"
+        "        sleep(0.1)\n"
+        "    for _ in range(10):  # decelerate\n"
+        "        client.Move(0.0, 0.0, 0.0)\n"
+        "        sleep(0.1)\n"
+    ),
+    "body_rotate_cw": (
+        "    # rotate clockwise for 2.0s\n"
+        "    for _ in range(20):\n"
+        "        client.Move(0.0, 0.0, -0.2)\n"
+        "        sleep(0.1)\n"
+        "    for _ in range(10):  # decelerate\n"
+        "        client.Move(0.0, 0.0, 0.0)\n"
+        "        sleep(0.1)\n"
+    ),
+    "body_rotate_acw": (
+        "    # rotate anti-clockwise for 2.0s\n"
+        "    for _ in range(20):\n"
+        "        client.Move(0.0, 0.0, 0.3)\n"
+        "        sleep(0.1)\n"
+        "    for _ in range(10):  # decelerate\n"
+        "        client.Move(0.0, 0.0, 0.0)\n"
+        "        sleep(0.1)\n"
+    ),
+    "wave_left_hand": (
+        "    # stop and stabilise — stay in kWalking, no mode change\n"
+        "    for _ in range(30):\n"
+        "        client.Move(0.0, 0.0, 0.0)\n"
+        "        sleep(0.1)\n"
+        "    # raise left hand (kWalking + V1, no ChangeMode, no SwitchHEC)\n"
+        "    _p = Posture()\n"
+        "    _p.orientation = Orientation(0.0, 0.0, 0.0)\n"
+        "    _p.position = Position(0.25, 0.30, 0.20)  # raise hand\n"
+        "    client.MoveHandEndEffector(_p, 1500, B1HandIndex.kLeftHand)\n"
+        "    sleep(1.5)\n"
+        "    for _ in range(3):\n"
+        "        _p.position = Position(0.25, 0.38, 0.18)  # wave out\n"
+        "        client.MoveHandEndEffector(_p, 500, B1HandIndex.kLeftHand)\n"
+        "        sleep(0.5)\n"
+        "        _p.position = Position(0.25, 0.22, 0.18)  # wave in\n"
+        "        client.MoveHandEndEffector(_p, 500, B1HandIndex.kLeftHand)\n"
+        "        sleep(0.5)\n"
+        "    _p.position = Position(0.28, 0.25, 0.05)  # lower hand\n"
+        "    client.MoveHandEndEffector(_p, 1500, B1HandIndex.kLeftHand)\n"
+        "    sleep(1.5)\n"
+    ),
     "wave_right_hand": "    wave_right_hand()  # wave right hand\n",
     "wave_both_hands": "    wave_both_hands()  # wave both hands\n",
     "head_rotate_cw":  "    head_rotate_cw()  # rotate head clockwise\n",
@@ -1881,14 +1939,25 @@ class SimpleViewEditor(LineNumberEditor):
         event.acceptProposedAction()
 
     def dropEvent(self, event):
-        """Block drops above the while True: loop."""
+        """Always append dropped snippet at the end of the while True body."""
+        if not event.mimeData().hasText():
+            super().dropEvent(event)
+            return
         logic_line = self._logic_start_line()
-        if logic_line is not None:
-            drop_line = self.cursorForPosition(event.position().toPoint()).blockNumber()
-            if drop_line < logic_line:
-                event.ignore()
-                return
-        super().dropEvent(event)
+        if logic_line is None:
+            event.ignore()
+            return
+        drop_line = self.cursorForPosition(event.position().toPoint()).blockNumber()
+        if drop_line < logic_line:
+            event.ignore()
+            return
+        # Always append at end to avoid splitting existing for-loop blocks
+        snippet = event.mimeData().text()
+        cursor = self.textCursor()
+        cursor.movePosition(cursor.MoveOperation.End)
+        cursor.insertText(snippet)
+        self.setTextCursor(cursor)
+        event.acceptProposedAction()
 
 
 # --- Syntax highlighter for Simple View ---
@@ -3497,12 +3566,12 @@ class RobotControlApp(QMainWindow):
         self.check_topics_btn.setEnabled(False)
         btn_row2.addWidget(self.check_topics_btn)
 
-        self.check_logs_btn = QPushButton("Check Logs")
+        self.check_logs_btn = QPushButton("Check Program Logs")
         self.check_logs_btn.clicked.connect(self.check_launch_logs)
         self.check_logs_btn.setEnabled(True)   # always active
         btn_row2.addWidget(self.check_logs_btn)
 
-        self.get_robot_logs_btn = QPushButton("Get Robot Logs")
+        self.get_robot_logs_btn = QPushButton("Check Robot Logs")
         self.get_robot_logs_btn.setStyleSheet(
             "QPushButton { background-color: #5856D6; color: white; padding: 6px; border-radius: 8px; }"
             "QPushButton:disabled { background-color: #B0B0B0; color: #707070; border-radius: 8px; }"
@@ -5657,7 +5726,7 @@ class RobotControlApp(QMainWindow):
         default_start = (now - datetime.timedelta(minutes=30)).strftime("%Y%m%d-%H%M%S")
 
         dialog = QDialog(self)
-        dialog.setWindowTitle("Get Robot Logs")
+        dialog.setWindowTitle("Check Robot Logs")
         dialog.setMinimumWidth(480)
         layout = QVBoxLayout(dialog)
 
@@ -5841,10 +5910,10 @@ class RobotControlApp(QMainWindow):
     def _generate_simple_code(self):
         """Generate standalone Booster SDK Python script."""
         return (
-            f'# TestGo SDK v5\n'
+            f'# TestGo SDK v6\n'
             f'from booster_robotics_sdk_python import (\n'
             f'    B1LocoClient, ChannelFactory,\n'
-            f'    B1HandIndex, Position, Orientation, Posture,\n'
+            f'    B1HandIndex, Position, Orientation, Posture, RobotMode,\n'
             f')\n'
             f'from time import sleep\n'
             f'import signal\n'
@@ -5862,29 +5931,6 @@ class RobotControlApp(QMainWindow):
             f'\n'
             f'signal.signal(signal.SIGTERM, _on_stop)\n'
             f'signal.signal(signal.SIGINT, _on_stop)\n'
-            f'\n'
-            f'def do_move(vx, vy, vz, duration=2.0):\n'
-            f'    steps = max(1, int(duration / 0.1))\n'
-            f'    for _ in range(steps):\n'
-            f'        client.Move(vx, vy, vz)\n'
-            f'        sleep(0.1)\n'
-            f'\n'
-            f'def wave_left_hand(count=3):\n'
-            f'    p = Posture()\n'
-            f'    p.orientation = Orientation(-1.57, -1.57, 0.0)\n'
-            f'    p.position = Position(0.35, 0.25, 0.28)          # raise hand\n'
-            f'    client.MoveHandEndEffector(p, 1000, B1HandIndex.kLeftHand)\n'
-            f'    sleep(1.0)\n'
-            f'    for _ in range(count):\n'
-            f'        p.position = Position(0.35, 0.35, 0.25)      # wave out\n'
-            f'        client.MoveHandEndEffector(p, 400, B1HandIndex.kLeftHand)\n'
-            f'        sleep(0.4)\n'
-            f'        p.position = Position(0.35, 0.15, 0.25)      # wave in\n'
-            f'        client.MoveHandEndEffector(p, 400, B1HandIndex.kLeftHand)\n'
-            f'        sleep(0.4)\n'
-            f'    p.position = Position(0.35, 0.25, 0.1)           # lower hand\n'
-            f'    client.MoveHandEndEffector(p, 1000, B1HandIndex.kLeftHand)\n'
-            f'    sleep(1.0)\n'
             f'\n'
             f'while True:\n'
             f'    pass  # \u2190 drag a function here\n'
@@ -6131,8 +6177,15 @@ class RobotControlApp(QMainWindow):
             with open(SDK_SCRIPT_PY, 'r') as f:
                 code = f.read()
         # Regenerate if the script is outdated (missing current version marker)
-        if not code or '# TestGo SDK v5' not in code:
+        if not code or '# TestGo SDK v6' not in code:
             code = self._generate_simple_code()
+            with open(SDK_SCRIPT_PY, 'w') as f:
+                f.write(code)
+        # Patch old import: ensure RobotMode is present
+        old_import = '    B1HandIndex, Position, Orientation, Posture,\n'
+        new_import = '    B1HandIndex, Position, Orientation, Posture, RobotMode,\n'
+        if old_import in code:
+            code = code.replace(old_import, new_import)
             with open(SDK_SCRIPT_PY, 'w') as f:
                 f.write(code)
         self._syncing = True
