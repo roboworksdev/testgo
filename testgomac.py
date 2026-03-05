@@ -24,6 +24,7 @@ from PyQt6.QtWidgets import (
     QTreeWidgetItemIterator, QAbstractItemView, QTableWidget, QTableWidgetItem, QHeaderView,
     QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QFrame,
     QButtonGroup, QMenu, QRadioButton, QFileDialog, QListView,
+    QGraphicsOpacityEffect,
 )
 from PyQt6.QtCore import (
     QThread, pyqtSignal, QRegularExpression, Qt, QSize, QRect,
@@ -187,6 +188,29 @@ _SIMPLE_VIEW_SNIPPETS = {
     "head_down": (
         "    # head down\n"
         "    _move_head(pitch=1.0, hold=1.5)\n"
+    ),
+    # Dance IDs:
+    #   DanceId.kNewYear          — New Year dance
+    #   DanceId.kNezha            — Nezha dance
+    #   DanceId.kTowardsFuture    — Towards Future dance
+    #   DanceId.kDabbingGesture   — Dabbing gesture
+    #   DanceId.kUltramanGesture  — Ultraman gesture
+    #   DanceId.kRespectGesture   — Respect gesture
+    #   DanceId.kCheeringGesture  — Cheering gesture
+    #   DanceId.kLuckyCatGesture  — Lucky Cat gesture
+    "dance": (
+        "    # dance — robot must be in kWalking mode (default on startup)\n"
+        "    # change DanceId to try a different dance:\n"
+        "    # kNewYear / kNezha / kTowardsFuture / kDabbingGesture /\n"
+        "    # kUltramanGesture / kRespectGesture / kCheeringGesture / kLuckyCatGesture\n"
+        "    _dance(DanceId.kNewYear)\n"
+    ),
+    "whole_body_dance": (
+        "    # whole body dance — robot must be in kWalking mode (default on startup)\n"
+        "    # change WholeBodyDanceId to try a different dance:\n"
+        "    # kArbicDance / kMichaelDance1 / kMichaelDance2 / kMichaelDance3 /\n"
+        "    # kMoonWalk / kBoxingStyleKick / kRoundhouseKick\n"
+        "    _whole_body_dance(WholeBodyDanceId.kArbicDance)\n"
     ),
 }
 
@@ -1906,6 +1930,8 @@ class FunctionsPanel(QWidget):
             ("head_rotate_acw", "head_rotate_acw"),
             ("head_up", "head_up"),
             ("head_down", "head_down"),
+            ("dance", "dance"),
+            ("whole_body_dance", "whole_body_dance"),
         ]),
     ]
 
@@ -2225,7 +2251,7 @@ class SimpleCodeHighlighter(QSyntaxHighlighter):
         self._string_fmt.setFontWeight(QFont.Weight.Bold)
 
         self._comment_fmt = QTextCharFormat()
-        self._comment_fmt.setForeground(QColor("#888888"))
+        self._comment_fmt.setForeground(QColor("#A0A0A0"))
 
         self._self_fmt = QTextCharFormat()
         self._self_fmt.setForeground(QColor("#AA5500"))
@@ -2284,6 +2310,540 @@ class SimpleCodeHighlighter(QSyntaxHighlighter):
         edit_idx = text.find('\u2190 edit')
         if edit_idx >= 0:
             self.setFormat(edit_idx, 6, self._edit_marker_fmt)
+
+
+# --- Block-based code editor for Simple View ---
+
+class _DropIndicator(QWidget):
+    """
+    Horizontal insert indicator: a 2px blue line with filled circles at each
+    end, drawn via QPainter for maximum visibility on any background.
+    """
+    _COLOR = QColor("#3395FF")
+    _R     = 4    # end-circle radius
+    _LW    = 2.4  # line width
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(self._R * 2 + 2)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
+        self.hide()
+
+    def paintEvent(self, _event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        cy = self.height() // 2
+        r  = self._R
+        # line
+        pen = QPen(self._COLOR, self._LW)
+        p.setPen(pen)
+        p.drawLine(r * 2 + 2, cy, self.width() - r * 2 - 2, cy)
+        # end circles
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QBrush(self._COLOR))
+        p.drawEllipse(2,                       cy - r, r * 2, r * 2)
+        p.drawEllipse(self.width() - r * 2 - 2, cy - r, r * 2, r * 2)
+
+
+class CodeBlockWidget(QFrame):
+    """
+    Visual code block. Hover shows open-hand cursor and bolder border.
+    Press + drag initiates block reorder (closed-hand cursor, semi-transparent
+    drag animation, blue drop-line between blocks).
+    Long-press reveals a white × delete button at top-right.
+    """
+    text_changed     = pyqtSignal()
+    drag_moved       = pyqtSignal(int)   # global_y during drag
+    drag_released    = pyqtSignal()
+    delete_requested = pyqtSignal()
+
+    _DRAG_THRESHOLD   = 8
+    _LONG_PRESS_MS    = 500
+
+    _OUTER_IDLE  = ("CodeBlockWidget { border: 1px solid #F7F7F7;"
+                    " border-radius: 4px; background: transparent; }")
+    _OUTER_HOVER = ("CodeBlockWidget { border: 2px solid #E7E7E7;"
+                    " border-radius: 4px; background: transparent; }")
+    _OUTER_DRAG  = ("CodeBlockWidget { border: 3px solid #409BFF;"
+                    " border-radius: 4px; background: transparent; }")
+
+    def __init__(self, code: str, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet(self._OUTER_IDLE)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
+
+        self._press_pos   = None
+        self._is_dragging = False
+
+        # long-press timer → show delete button
+        self._long_press_timer = QTimer(self)
+        self._long_press_timer.setSingleShot(True)
+        self._long_press_timer.setInterval(self._LONG_PRESS_MS)
+        self._long_press_timer.timeout.connect(self._show_delete_btn)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(4, 4, 4, 4)  # ~1 mm gap between outer and inner border
+        outer.setSpacing(0)
+
+        self._inner = QWidget()
+        outer.addWidget(self._inner)
+
+        row = QHBoxLayout(self._inner)
+        row.setContentsMargins(8, 8, 8, 8)
+        row.setSpacing(0)
+
+        self._editor = QPlainTextEdit()
+        self._editor.setFont(QFont("Menlo", 13))
+        self._editor.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        self._editor.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._editor.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._editor.document().setDocumentMargin(3)
+        self._editor.setPlainText(code)
+        self._editor.textChanged.connect(self.text_changed)
+        self._editor.textChanged.connect(self._fit_height)
+        self._highlighter = SimpleCodeHighlighter(self._editor.document())
+        # open-hand cursor over the text area too
+        self._editor.viewport().setCursor(Qt.CursorShape.OpenHandCursor)
+        self._editor.viewport().installEventFilter(self)
+        row.addWidget(self._editor, stretch=1)
+
+        # opacity effect for drag animation (semi-transparent while dragging)
+        self._opacity = QGraphicsOpacityEffect(self)
+        self._opacity.setOpacity(1.0)
+        self.setGraphicsEffect(self._opacity)
+
+        # delete button — shown on long-press, hidden otherwise
+        self._delete_btn = QPushButton("×", self)
+        self._delete_btn.setFixedSize(20, 20)
+        self._delete_btn.setStyleSheet(
+            "QPushButton {"
+            "  background: white;"
+            "  color: #333333;"
+            "  border: 1px solid #CCCCCC;"
+            "  border-radius: 10px;"
+            "  font-size: 13px;"
+            "  font-weight: bold;"
+            "  padding: 0px;"
+            "}"
+            "QPushButton:hover { background: #F0F0F0; }"
+        )
+        self._delete_btn.hide()
+        self._delete_btn.clicked.connect(self._on_delete_clicked)
+
+        QTimer.singleShot(0, self._fit_height)
+
+    def _fit_height(self):
+        fm = self._editor.fontMetrics()
+        n  = max(1, self._editor.document().blockCount())
+        self._editor.setFixedHeight(fm.height() * n + fm.height() + 8)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._position_delete_btn()
+
+    def _position_delete_btn(self):
+        self._delete_btn.move(self.width() - self._delete_btn.width() - 4, 4)
+
+    def _show_delete_btn(self):
+        self._position_delete_btn()
+        self._delete_btn.show()
+        self._delete_btn.raise_()
+
+    def _on_delete_clicked(self):
+        self._delete_btn.hide()
+        self.delete_requested.emit()
+
+    def code(self) -> str:
+        return self._editor.toPlainText()
+
+    def set_font(self, font):
+        self._editor.setFont(font)
+        self._fit_height()
+
+    # ── drag visual state ──────────────────────────────────────────────────
+    def start_drag_visual(self):
+        self._is_dragging = True
+        self.setStyleSheet(self._OUTER_DRAG)
+        self._opacity.setOpacity(0.45)
+        cur = Qt.CursorShape.ClosedHandCursor
+        self.setCursor(cur)
+        self._editor.viewport().setCursor(cur)
+
+    def end_drag_visual(self):
+        self._is_dragging = False
+        self.setStyleSheet(self._OUTER_IDLE)
+        self._opacity.setOpacity(1.0)
+        cur = Qt.CursorShape.OpenHandCursor
+        self.setCursor(cur)
+        self._editor.viewport().setCursor(cur)
+
+    # ── hover border (skip while dragging) ────────────────────────────────
+    def enterEvent(self, event):
+        if not self._is_dragging:
+            self.setStyleSheet(self._OUTER_HOVER)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        if not self._is_dragging:
+            self.setStyleSheet(self._OUTER_IDLE)
+        self._long_press_timer.stop()
+        self._delete_btn.hide()
+        super().leaveEvent(event)
+
+    # ── drag detection via editor viewport event filter ────────────────────
+    def eventFilter(self, obj, event):
+        if obj is self._editor.viewport():
+            t = event.type()
+            if t == event.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+                self._press_pos = event.globalPosition().toPoint()
+                self.setCursor(Qt.CursorShape.ClosedHandCursor)
+                self._editor.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
+                self._long_press_timer.start()
+                # pass through so editor can place cursor on click
+                return False
+            elif t == event.Type.MouseMove and self._press_pos is not None:
+                moved = (event.globalPosition().toPoint() - self._press_pos).manhattanLength()
+                if moved >= self._DRAG_THRESHOLD:
+                    self._press_pos = None
+                    self._long_press_timer.stop()
+                    self._delete_btn.hide()
+                    self.drag_moved.emit(event.globalPosition().toPoint().y())
+                return True   # always consume — prevents text selection during drag
+            elif t == event.Type.MouseMove and self._is_dragging:
+                self.drag_moved.emit(event.globalPosition().toPoint().y())
+                return True
+            elif t == event.Type.MouseButtonRelease:
+                self._press_pos = None
+                self._long_press_timer.stop()
+                if self._is_dragging:
+                    self.drag_released.emit()
+                else:
+                    self.setCursor(Qt.CursorShape.OpenHandCursor)
+                    self._editor.viewport().setCursor(Qt.CursorShape.OpenHandCursor)
+        return super().eventFilter(obj, event)
+
+
+class BlockEditorWidget(QWidget):
+    """
+    Replaces SimpleViewEditor in Simple View.
+    Shows a read-only header then each body snippet as a draggable CodeBlockWidget.
+    Exposes the same interface as QPlainTextEdit used by the rest of the app.
+    """
+    textChanged = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAcceptDrops(True)
+
+        self._blocks: list = []
+        self._drag_src  = None
+        self._drop_idx  = -1
+        self._font      = QFont("Menlo", 13)
+
+        # auto-scroll while dragging a block near the top/bottom edge
+        self._scroll_dy = 0
+        self._auto_scroll_timer = QTimer(self)
+        self._auto_scroll_timer.setInterval(20)
+        self._auto_scroll_timer.timeout.connect(self._do_auto_scroll)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # read-only header — height capped at 160px
+        self._header = QPlainTextEdit()
+        self._header.setReadOnly(True)
+        self._header.setFont(self._font)
+        self._header.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        self._header.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._header_hl = SimpleCodeHighlighter(self._header.document())
+        root.addWidget(self._header)
+
+        # scrollable block area
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        root.addWidget(self._scroll, stretch=1)
+
+        self._container = QWidget()
+        self._container.setAcceptDrops(True)
+        self._blk_lay = QVBoxLayout(self._container)
+        self._blk_lay.setContentsMargins(4, 4, 19, 8)
+        self._blk_lay.setSpacing(8)
+        self._scroll.setWidget(self._container)
+
+        self._pass_lbl = QLabel("    pass  # \u2190 drag a function here")
+        self._pass_lbl.setFont(self._font)
+        self._pass_lbl.setStyleSheet(
+            "color: #28A745; font-weight: bold; padding: 2px 6px;"
+        )
+        self._blk_lay.addWidget(self._pass_lbl)
+        self._blk_lay.addStretch()
+
+        self._drop_line = _DropIndicator(self._container)
+
+        self._container.installEventFilter(self)
+        self._scroll.installEventFilter(self)
+
+    # ── QPlainTextEdit compatibility ───────────────────────────────────────
+    def document(self):         return self._header.document()
+    def font(self):             return self._font
+    def textCursor(self):       return self._header.textCursor()
+    def setTextCursor(self, _): pass
+
+    def undo(self):
+        for b in reversed(self._blocks):
+            if b._editor.hasFocus(): b._editor.undo(); return
+
+    def redo(self):
+        for b in reversed(self._blocks):
+            if b._editor.hasFocus(): b._editor.redo(); return
+
+    def setFont(self, font):
+        self._font = font
+        self._header.setFont(font)
+        self._pass_lbl.setFont(font)
+        for b in self._blocks: b.set_font(font)
+
+    def setLineWrapMode(self, mode):
+        self._header.setLineWrapMode(mode)
+
+    def _fit_header_height(self):
+        fm = self._header.fontMetrics()
+        n  = max(1, self._header.document().blockCount())
+        self._header.setFixedHeight(min(fm.height() * n + 10, 160))
+
+    # ── text interface ─────────────────────────────────────────────────────
+    def setPlainText(self, text: str):
+        lines = text.split("\n")
+        wt = next((i for i, l in enumerate(lines) if l.strip().startswith("while True")), None)
+        if wt is None:
+            self._header.setPlainText(text)
+            self._fit_header_height()
+            self._clear_blocks()
+            return
+        self._header.setPlainText("\n".join(lines[:wt + 1]))
+        self._fit_header_height()
+        body = lines[wt + 1:]
+        for i, l in enumerate(body):
+            if l.strip().startswith("pass"):
+                body = body[i + 1:]; break
+        self._clear_blocks()
+        for blk in self._parse_blocks(body):
+            self._append_block(blk, emit=False)
+
+    def _parse_blocks(self, body_lines: list) -> list:
+        blocks, current = [], []
+        for line in body_lines:
+            if re.match(r"^    #", line) and current:
+                if "\n".join(current).strip():
+                    blocks.append("\n".join(current).rstrip())
+                current = [line]
+            else:
+                current.append(line)
+        if current and "\n".join(current).strip():
+            blocks.append("\n".join(current).rstrip())
+        return blocks
+
+    def toPlainText(self) -> str:
+        parts = [self._header.toPlainText(),
+                 "    pass  # \u2190 drag a function here"]
+        for b in self._blocks:
+            c = b.code().rstrip()
+            if c: parts.append(c)
+        return "\n".join(parts) + "\n"
+
+    # ── block management ───────────────────────────────────────────────────
+    def _clear_blocks(self):
+        for b in self._blocks:
+            self._blk_lay.removeWidget(b)
+            b.deleteLater()
+        self._blocks.clear()
+        self._pass_lbl.setVisible(True)
+
+    def _append_block(self, code: str, idx: int = -1, emit=True):
+        blk = CodeBlockWidget(code)
+        blk.text_changed.connect(self.textChanged)
+        blk.text_changed.connect(lambda b=blk: self._remove_block(b) if not b.code().strip() else None)
+        blk.drag_moved.connect(lambda y, b=blk: self._on_drag_moved(b, y))
+        blk.drag_released.connect(self._finish_drag)
+        blk.delete_requested.connect(lambda b=blk: self._remove_block(b))
+        if 0 <= idx <= len(self._blocks):
+            self._blk_lay.insertWidget(1 + idx, blk)
+            self._blocks.insert(idx, blk)
+        else:
+            self._blk_lay.insertWidget(self._blk_lay.count() - 1, blk)
+            self._blocks.append(blk)
+        self._pass_lbl.setVisible(False)
+        if emit: self.textChanged.emit()
+        return blk
+
+    def _remove_block(self, blk):
+        if blk not in self._blocks:
+            return
+        self._blk_lay.removeWidget(blk)
+        self._blocks.remove(blk)
+        blk.deleteLater()
+        if not self._blocks:
+            self._pass_lbl.setVisible(True)
+        self.textChanged.emit()
+
+    # ── external drops (DraggableFunctionButton) ───────────────────────────
+    def _ext_drag_update(self, source_widget, local_pos):
+        """Show drop indicator for an external drag at the given local position."""
+        global_y = source_widget.mapToGlobal(local_pos).y()
+        idx = self._block_insert_idx(global_y)
+        self._drop_idx = idx
+        self._show_drop_line(idx)
+
+    def dragEnterEvent(self, e):
+        if e.mimeData().hasText():
+            e.acceptProposedAction()
+            self._ext_drag_update(self, e.position().toPoint())
+        else:
+            super().dragEnterEvent(e)
+
+    def dragMoveEvent(self, e):
+        if e.mimeData().hasText():
+            e.acceptProposedAction()
+            self._ext_drag_update(self, e.position().toPoint())
+        else:
+            super().dragMoveEvent(e)
+
+    def dragLeaveEvent(self, e):
+        self._drop_line.hide()
+        self._drop_idx = -1
+        super().dragLeaveEvent(e)
+
+    def dropEvent(self, e):
+        if e.mimeData().hasText():
+            self._drop_line.hide()
+            snippet = e.mimeData().text().rstrip()
+            if snippet:
+                self._append_block(snippet, idx=self._drop_idx)
+            self._drop_idx = -1
+            e.acceptProposedAction()
+        else:
+            super().dropEvent(e)
+
+    def eventFilter(self, obj, event):
+        if obj in (self._container, self._scroll):
+            t = event.type()
+            if t == event.Type.DragEnter and event.mimeData().hasText():
+                event.acceptProposedAction()
+                self._ext_drag_update(obj, event.position().toPoint())
+                return True
+            if t == event.Type.DragMove and event.mimeData().hasText():
+                event.acceptProposedAction()
+                self._ext_drag_update(obj, event.position().toPoint())
+                return True
+            if t == event.Type.DragLeave:
+                self._drop_line.hide()
+                self._drop_idx = -1
+                return True
+            if t == event.Type.Drop and event.mimeData().hasText():
+                self._drop_line.hide()
+                snippet = event.mimeData().text().rstrip()
+                if snippet:
+                    self._append_block(snippet, idx=self._drop_idx)
+                self._drop_idx = -1
+                event.acceptProposedAction()
+                return True
+        return super().eventFilter(obj, event)
+
+    # ── auto-scroll while dragging ─────────────────────────────────────────
+    _SCROLL_ZONE  = 60   # px from edge that triggers scrolling
+    _SCROLL_SPEED = 12   # px per timer tick (20 ms)
+
+    def _do_auto_scroll(self):
+        sb = self._scroll.verticalScrollBar()
+        sb.setValue(sb.value() + self._scroll_dy)
+
+    def _update_auto_scroll(self, global_y: int):
+        """Start/stop auto-scroll based on how close global_y is to the scroll edges."""
+        vp = self._scroll.viewport()
+        local_y = vp.mapFromGlobal(vp.mapToGlobal(vp.rect().topLeft())).y()
+        # convert global_y to scroll-viewport-local y
+        top_global    = vp.mapToGlobal(vp.rect().topLeft()).y()
+        bottom_global = vp.mapToGlobal(vp.rect().bottomLeft()).y()
+        dist_top    = global_y - top_global
+        dist_bottom = bottom_global - global_y
+
+        if dist_top < self._SCROLL_ZONE and dist_top >= 0:
+            # near top — scale speed by proximity
+            frac = 1.0 - dist_top / self._SCROLL_ZONE
+            self._scroll_dy = -max(2, int(self._SCROLL_SPEED * frac))
+            if not self._auto_scroll_timer.isActive():
+                self._auto_scroll_timer.start()
+        elif dist_bottom < self._SCROLL_ZONE and dist_bottom >= 0:
+            # near bottom — scale speed by proximity
+            frac = 1.0 - dist_bottom / self._SCROLL_ZONE
+            self._scroll_dy = max(2, int(self._SCROLL_SPEED * frac))
+            if not self._auto_scroll_timer.isActive():
+                self._auto_scroll_timer.start()
+        else:
+            self._scroll_dy = 0
+            self._auto_scroll_timer.stop()
+
+    # ── block drag-reorder ─────────────────────────────────────────────────
+    def _on_drag_moved(self, blk, global_y: int):
+        if self._drag_src is None:
+            self._drag_src = blk
+            blk.start_drag_visual()
+        idx = self._block_insert_idx(global_y)
+        self._drop_idx = idx
+        self._show_drop_line(idx)
+        self._update_auto_scroll(global_y)
+
+    def _block_insert_idx(self, global_y: int) -> int:
+        for i, b in enumerate(self._blocks):
+            if b is self._drag_src:
+                continue
+            mid = b.mapToGlobal(b.rect().topLeft()).y() + b.height() // 2
+            if global_y < mid:
+                return i
+        return len(self._blocks)
+
+    def _show_drop_line(self, idx: int):
+        h  = self._drop_line.height()
+        w  = self._container.width()
+        visible = [b for b in self._blocks if b is not self._drag_src]
+        if not visible:
+            cy = self._pass_lbl.geometry().bottom() + 4
+        elif idx >= len(self._blocks):
+            last = next((b for b in reversed(self._blocks) if b is not self._drag_src), None)
+            cy = (last.mapTo(self._container, last.rect().bottomLeft()).y() + 4) if last else (self._pass_lbl.geometry().bottom() + 4)
+        else:
+            target = self._blocks[idx]
+            cy = target.mapTo(self._container, target.rect().topLeft()).y() - 4
+        self._drop_line.setGeometry(0, cy - h // 2, w, h)
+        self._drop_line.show()
+        self._drop_line.raise_()
+
+    def _finish_drag(self):
+        src = self._drag_src
+        if src is None:
+            return
+        self._auto_scroll_timer.stop()
+        self._scroll_dy = 0
+        src.end_drag_visual()
+        self._drop_line.hide()
+        self._drag_src = None
+        if src not in self._blocks:
+            return
+        si = self._blocks.index(src)
+        di = self._drop_idx
+        self._drop_idx = -1
+        if di != si and di != si + 1:
+            self._blk_lay.removeWidget(src)
+            self._blocks.pop(si)
+            if di > si: di -= 1
+            self._blk_lay.insertWidget(1 + di, src)
+            self._blocks.insert(di, src)
+            self.textChanged.emit()
 
 
 # --- Syntax highlighter for Full View ---
@@ -5063,10 +5623,8 @@ class RobotControlApp(QMainWindow):
         func_scroll.setMinimumWidth(180)
         simple_view_splitter.addWidget(func_scroll)
 
-        self.simple_editor = SimpleViewEditor()
+        self.simple_editor = BlockEditorWidget()
         self.simple_editor.setFont(QFont("Menlo", 13))
-        self.simple_editor.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
-        self._simple_highlighter = SimpleCodeHighlighter(self.simple_editor.document())
         self.simple_editor.textChanged.connect(self._on_simple_code_changed)
         simple_view_splitter.addWidget(self.simple_editor)
 
@@ -6212,6 +6770,7 @@ class RobotControlApp(QMainWindow):
             f'from booster_robotics_sdk_python import (\n'
             f'    B1LocoClient, ChannelFactory,\n'
             f'    B1HandIndex, Position, Orientation, Posture, RobotMode,\n'
+            f'    DanceId, WholeBodyDanceId,\n'
             f')\n'
             f'from time import sleep\n'
             f'import signal\n'
@@ -6257,12 +6816,70 @@ class RobotControlApp(QMainWindow):
             f'    client.RotateHead(0.0, 0.0)\n'
             f'    sleep(0.5)\n'
             f'\n'
-            f'def _wave_both_hands(raise_z=0.20, lower_z=0.05, reps=3):\n'
-            f'    import threading\n'
-            f'    tl = threading.Thread(target=_wave_hand, args=(B1HandIndex.kLeftHand,), kwargs={{"raise_z": raise_z, "lower_z": lower_z, "reps": reps}})\n'
-            f'    tr = threading.Thread(target=_wave_hand, args=(B1HandIndex.kRightHand,), kwargs={{"raise_z": raise_z, "lower_z": lower_z, "reps": reps}})\n'
-            f'    tl.start(); tr.start()\n'
-            f'    tl.join(); tr.join()\n'
+            f'def _wave_both_hands(raise_z=0.20, lower_z=0.05, reps=2):\n'
+            f'    for _ in range(10):\n'
+            f'        client.Move(0.0, 0.0, 0.0)\n'
+            f'        sleep(0.1)\n'
+            f'    _pl = Posture(); _pl.orientation = Orientation(0.0, 0.0, 0.0)\n'
+            f'    _pr = Posture(); _pr.orientation = Orientation(0.0, 0.0, 0.0)\n'
+            f'    _pl.position = Position(0.25,  0.30, raise_z)\n'
+            f'    _pr.position = Position(0.25, -0.30, raise_z)\n'
+            f'    client.MoveHandEndEffector(_pl, 1000, B1HandIndex.kLeftHand)\n'
+            f'    client.MoveHandEndEffector(_pr, 1000, B1HandIndex.kRightHand)\n'
+            f'    sleep(1.0)\n'
+            f'    for _ in range(reps):\n'
+            f'        _pl.position = Position(0.25,  0.38, raise_z)\n'
+            f'        _pr.position = Position(0.25, -0.38, raise_z)\n'
+            f'        client.MoveHandEndEffector(_pl, 500, B1HandIndex.kLeftHand)\n'
+            f'        client.MoveHandEndEffector(_pr, 500, B1HandIndex.kRightHand)\n'
+            f'        sleep(0.5)\n'
+            f'        _pl.position = Position(0.25,  0.22, raise_z)\n'
+            f'        _pr.position = Position(0.25, -0.22, raise_z)\n'
+            f'        client.MoveHandEndEffector(_pl, 500, B1HandIndex.kLeftHand)\n'
+            f'        client.MoveHandEndEffector(_pr, 500, B1HandIndex.kRightHand)\n'
+            f'        sleep(0.5)\n'
+            f'    _pl.position = Position(0.28,  0.25, lower_z)\n'
+            f'    _pr.position = Position(0.28, -0.25, lower_z)\n'
+            f'    client.MoveHandEndEffector(_pl, 1000, B1HandIndex.kLeftHand)\n'
+            f'    client.MoveHandEndEffector(_pr, 1000, B1HandIndex.kRightHand)\n'
+            f'    sleep(1.0)\n'
+            f'\n'
+            f'# Dance IDs (pass as dance_id argument to _dance):\n'
+            f'#   DanceId.kNewYear          \u2014 New Year dance\n'
+            f'#   DanceId.kNezha            \u2014 Nezha dance\n'
+            f'#   DanceId.kTowardsFuture    \u2014 Towards Future dance\n'
+            f'#   DanceId.kDabbingGesture   \u2014 Dabbing gesture\n'
+            f'#   DanceId.kUltramanGesture  \u2014 Ultraman gesture\n'
+            f'#   DanceId.kRespectGesture   \u2014 Respect gesture\n'
+            f'#   DanceId.kCheeringGesture  \u2014 Cheering gesture\n'
+            f'#   DanceId.kLuckyCatGesture  \u2014 Lucky Cat gesture\n'
+            f'# Note: robot must remain in kWalking mode \u2014 do NOT call ChangeMode before dance.\n'
+            f'def _dance(dance_id=DanceId.kNewYear, duration=8.0):\n'
+            f'    # Stop and stabilise before dancing (must stay in kWalking mode)\n'
+            f'    for _ in range(10):\n'
+            f'        client.Move(0.0, 0.0, 0.0)\n'
+            f'        sleep(0.1)\n'
+            f'    client.Dance(dance_id)\n'
+            f'    sleep(duration)\n'
+            f'    client.Dance(DanceId.kStop)\n'
+            f'    sleep(0.5)\n'
+            f'\n'
+            f'# Whole Body Dance IDs (pass as dance_id argument to _whole_body_dance):\n'
+            f'#   WholeBodyDanceId.kArbicDance      \u2014 Arabic dance\n'
+            f'#   WholeBodyDanceId.kMichaelDance1   \u2014 Michael Jackson move 1\n'
+            f'#   WholeBodyDanceId.kMichaelDance2   \u2014 Michael Jackson move 2\n'
+            f'#   WholeBodyDanceId.kMichaelDance3   \u2014 Michael Jackson move 3\n'
+            f'#   WholeBodyDanceId.kMoonWalk        \u2014 Moonwalk\n'
+            f'#   WholeBodyDanceId.kBoxingStyleKick \u2014 Boxing style kick\n'
+            f'#   WholeBodyDanceId.kRoundhouseKick  \u2014 Roundhouse kick\n'
+            f'# Note: robot must remain in kWalking mode \u2014 do NOT call ChangeMode before dance.\n'
+            f'def _whole_body_dance(dance_id=WholeBodyDanceId.kArbicDance, duration=10.0):\n'
+            f'    # Stop and stabilise before dancing (must stay in kWalking mode)\n'
+            f'    for _ in range(10):\n'
+            f'        client.Move(0.0, 0.0, 0.0)\n'
+            f'        sleep(0.1)\n'
+            f'    client.WholeBodyDance(dance_id)\n'
+            f'    sleep(duration)\n'
             f'\n'
             f'# \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n'
             f'# \u26a0  DO NOT EDIT above this line \u2014 auto-generated header\n'
@@ -6591,13 +7208,102 @@ class RobotControlApp(QMainWindow):
             code = code.replace(insert_before, _move_head_fn + insert_before, 1)
             with open(SDK_SCRIPT_PY, 'w') as f:
                 f.write(code)
+        # Patch missing DanceId / WholeBodyDanceId imports
+        if ('DanceId' not in code or 'WholeBodyDanceId' not in code) and 'booster_robotics_sdk_python' in code:
+            # Build the replacement import block with both IDs
+            old_import = '    B1HandIndex, Position, Orientation, Posture, RobotMode,\n)'
+            new_import = '    B1HandIndex, Position, Orientation, Posture, RobotMode,\n    DanceId, WholeBodyDanceId,\n)'
+            # Also handle the case where DanceId was added but WholeBodyDanceId was not
+            old_import_partial = '    B1HandIndex, Position, Orientation, Posture, RobotMode,\n    DanceId,\n)'
+            if old_import_partial in code:
+                code = code.replace(old_import_partial, new_import)
+            elif old_import in code:
+                code = code.replace(old_import, new_import)
+            with open(SDK_SCRIPT_PY, 'w') as f:
+                f.write(code)
+        # Patch missing _dance helper
+        if 'def _dance(' not in code and 'while True:' in code:
+            _dance_fn = (
+                '# Dance IDs (pass as dance_id argument to _dance):\n'
+                '#   DanceId.kNewYear          \u2014 New Year dance\n'
+                '#   DanceId.kNezha            \u2014 Nezha dance\n'
+                '#   DanceId.kTowardsFuture    \u2014 Towards Future dance\n'
+                '#   DanceId.kDabbingGesture   \u2014 Dabbing gesture\n'
+                '#   DanceId.kUltramanGesture  \u2014 Ultraman gesture\n'
+                '#   DanceId.kRespectGesture   \u2014 Respect gesture\n'
+                '#   DanceId.kCheeringGesture  \u2014 Cheering gesture\n'
+                '#   DanceId.kLuckyCatGesture  \u2014 Lucky Cat gesture\n'
+                '# Note: robot must remain in kWalking mode \u2014 do NOT call ChangeMode before dance.\n'
+                'def _dance(dance_id=DanceId.kNewYear, duration=8.0):\n'
+                '    # Stop and stabilise before dancing (must stay in kWalking mode)\n'
+                '    for _ in range(10):\n'
+                '        client.Move(0.0, 0.0, 0.0)\n'
+                '        sleep(0.1)\n'
+                '    client.Dance(dance_id)\n'
+                '    sleep(duration)\n'
+                '    client.Dance(DanceId.kStop)\n'
+                '    sleep(0.5)\n'
+                '\n'
+            )
+            insert_before = _warning_banner if _warning_banner in code else 'while True:\n'
+            code = code.replace(insert_before, _dance_fn + insert_before, 1)
+            with open(SDK_SCRIPT_PY, 'w') as f:
+                f.write(code)
+        # Patch missing _whole_body_dance helper
+        if 'def _whole_body_dance(' not in code and 'while True:' in code:
+            _wbd_fn = (
+                '# Whole Body Dance IDs (pass as dance_id argument to _whole_body_dance):\n'
+                '#   WholeBodyDanceId.kArbicDance      \u2014 Arabic dance\n'
+                '#   WholeBodyDanceId.kMichaelDance1   \u2014 Michael Jackson move 1\n'
+                '#   WholeBodyDanceId.kMichaelDance2   \u2014 Michael Jackson move 2\n'
+                '#   WholeBodyDanceId.kMichaelDance3   \u2014 Michael Jackson move 3\n'
+                '#   WholeBodyDanceId.kMoonWalk        \u2014 Moonwalk\n'
+                '#   WholeBodyDanceId.kBoxingStyleKick \u2014 Boxing style kick\n'
+                '#   WholeBodyDanceId.kRoundhouseKick  \u2014 Roundhouse kick\n'
+                '# Note: robot must remain in kWalking mode \u2014 do NOT call ChangeMode before dance.\n'
+                'def _whole_body_dance(dance_id=WholeBodyDanceId.kArbicDance, duration=10.0):\n'
+                '    # Stop and stabilise before dancing (must stay in kWalking mode)\n'
+                '    for _ in range(10):\n'
+                '        client.Move(0.0, 0.0, 0.0)\n'
+                '        sleep(0.1)\n'
+                '    client.WholeBodyDance(dance_id)\n'
+                '    sleep(duration)\n'
+                '\n'
+            )
+            insert_before = _warning_banner if _warning_banner in code else 'while True:\n'
+            code = code.replace(insert_before, _wbd_fn + insert_before, 1)
+            with open(SDK_SCRIPT_PY, 'w') as f:
+                f.write(code)
         # Patch missing _wave_both_hands helper
         if 'def _wave_both_hands(' not in code and 'while True:' in code:
             _wave_both_fn = (
-                'def _wave_both_hands(raise_z=0.20, lower_z=0.05, reps=3):\n'
-                '    import threading\n'
-                '    tl = threading.Thread(target=_wave_hand, args=(B1HandIndex.kLeftHand,), kwargs={"raise_z": raise_z, "lower_z": lower_z, "reps": reps})\n'
-                '    tr = threading.Thread(target=_wave_hand, args=(B1HandIndex.kRightHand,), kwargs={"raise_z": raise_z, "lower_z": lower_z, "reps": reps})\n'
+                'def _wave_both_hands(raise_z=0.20, lower_z=0.05, reps=2):\n'
+                '    for _ in range(10):\n'
+                '        client.Move(0.0, 0.0, 0.0)\n'
+                '        sleep(0.1)\n'
+                '    _pl = Posture(); _pl.orientation = Orientation(0.0, 0.0, 0.0)\n'
+                '    _pr = Posture(); _pr.orientation = Orientation(0.0, 0.0, 0.0)\n'
+                '    _pl.position = Position(0.25,  0.30, raise_z)\n'
+                '    _pr.position = Position(0.25, -0.30, raise_z)\n'
+                '    client.MoveHandEndEffector(_pl, 1000, B1HandIndex.kLeftHand)\n'
+                '    client.MoveHandEndEffector(_pr, 1000, B1HandIndex.kRightHand)\n'
+                '    sleep(1.0)\n'
+                '    for _ in range(reps):\n'
+                '        _pl.position = Position(0.25,  0.38, raise_z)\n'
+                '        _pr.position = Position(0.25, -0.38, raise_z)\n'
+                '        client.MoveHandEndEffector(_pl, 500, B1HandIndex.kLeftHand)\n'
+                '        client.MoveHandEndEffector(_pr, 500, B1HandIndex.kRightHand)\n'
+                '        sleep(0.5)\n'
+                '        _pl.position = Position(0.25,  0.22, raise_z)\n'
+                '        _pr.position = Position(0.25, -0.22, raise_z)\n'
+                '        client.MoveHandEndEffector(_pl, 500, B1HandIndex.kLeftHand)\n'
+                '        client.MoveHandEndEffector(_pr, 500, B1HandIndex.kRightHand)\n'
+                '        sleep(0.5)\n'
+                '    _pl.position = Position(0.28,  0.25, lower_z)\n'
+                '    _pr.position = Position(0.28, -0.25, lower_z)\n'
+                '    client.MoveHandEndEffector(_pl, 1000, B1HandIndex.kLeftHand)\n'
+                '    client.MoveHandEndEffector(_pr, 1000, B1HandIndex.kRightHand)\n'
+                '    sleep(1.0)\n'
                 '    tl.start(); tr.start()\n'
                 '    tl.join(); tr.join()\n'
                 '\n'
