@@ -189,29 +189,6 @@ _SIMPLE_VIEW_SNIPPETS = {
         "    # head down\n"
         "    _move_head(pitch=1.0, hold=1.5)\n"
     ),
-    # Dance IDs:
-    #   DanceId.kNewYear          — New Year dance
-    #   DanceId.kNezha            — Nezha dance
-    #   DanceId.kTowardsFuture    — Towards Future dance
-    #   DanceId.kDabbingGesture   — Dabbing gesture
-    #   DanceId.kUltramanGesture  — Ultraman gesture
-    #   DanceId.kRespectGesture   — Respect gesture
-    #   DanceId.kCheeringGesture  — Cheering gesture
-    #   DanceId.kLuckyCatGesture  — Lucky Cat gesture
-    "dance": (
-        "    # dance — robot must be in kWalking mode (default on startup)\n"
-        "    # change DanceId to try a different dance:\n"
-        "    # kNewYear / kNezha / kTowardsFuture / kDabbingGesture /\n"
-        "    # kUltramanGesture / kRespectGesture / kCheeringGesture / kLuckyCatGesture\n"
-        "    _dance(DanceId.kNewYear)\n"
-    ),
-    "whole_body_dance": (
-        "    # whole body dance — robot must be in kWalking mode (default on startup)\n"
-        "    # change WholeBodyDanceId to try a different dance:\n"
-        "    # kArbicDance / kMichaelDance1 / kMichaelDance2 / kMichaelDance3 /\n"
-        "    # kMoonWalk / kBoxingStyleKick / kRoundhouseKick\n"
-        "    _whole_body_dance(WholeBodyDanceId.kArbicDance)\n"
-    ),
 }
 
 
@@ -1930,8 +1907,6 @@ class FunctionsPanel(QWidget):
             ("head_rotate_acw", "head_rotate_acw"),
             ("head_up", "head_up"),
             ("head_down", "head_down"),
-            ("dance", "dance"),
-            ("whole_body_dance", "whole_body_dance"),
         ]),
     ]
 
@@ -4377,7 +4352,7 @@ class RobotControlApp(QMainWindow):
         self.check_topics_btn.setEnabled(False)
         btn_row2.addWidget(self.check_topics_btn)
 
-        self.check_logs_btn = QPushButton("Check Program Logs")
+        self.check_logs_btn = QPushButton("Check Computer Logs")
         self.check_logs_btn.clicked.connect(self.check_launch_logs)
         self.check_logs_btn.setEnabled(True)   # always active
         btn_row2.addWidget(self.check_logs_btn)
@@ -6770,7 +6745,6 @@ class RobotControlApp(QMainWindow):
             f'from booster_robotics_sdk_python import (\n'
             f'    B1LocoClient, ChannelFactory,\n'
             f'    B1HandIndex, Position, Orientation, Posture, RobotMode,\n'
-            f'    DanceId, WholeBodyDanceId,\n'
             f')\n'
             f'from time import sleep\n'
             f'import signal\n'
@@ -6843,43 +6817,6 @@ class RobotControlApp(QMainWindow):
             f'    client.MoveHandEndEffector(_pl, 1000, B1HandIndex.kLeftHand)\n'
             f'    client.MoveHandEndEffector(_pr, 1000, B1HandIndex.kRightHand)\n'
             f'    sleep(1.0)\n'
-            f'\n'
-            f'# Dance IDs (pass as dance_id argument to _dance):\n'
-            f'#   DanceId.kNewYear          \u2014 New Year dance\n'
-            f'#   DanceId.kNezha            \u2014 Nezha dance\n'
-            f'#   DanceId.kTowardsFuture    \u2014 Towards Future dance\n'
-            f'#   DanceId.kDabbingGesture   \u2014 Dabbing gesture\n'
-            f'#   DanceId.kUltramanGesture  \u2014 Ultraman gesture\n'
-            f'#   DanceId.kRespectGesture   \u2014 Respect gesture\n'
-            f'#   DanceId.kCheeringGesture  \u2014 Cheering gesture\n'
-            f'#   DanceId.kLuckyCatGesture  \u2014 Lucky Cat gesture\n'
-            f'# Note: robot must remain in kWalking mode \u2014 do NOT call ChangeMode before dance.\n'
-            f'def _dance(dance_id=DanceId.kNewYear, duration=8.0):\n'
-            f'    # Stop and stabilise before dancing (must stay in kWalking mode)\n'
-            f'    for _ in range(10):\n'
-            f'        client.Move(0.0, 0.0, 0.0)\n'
-            f'        sleep(0.1)\n'
-            f'    client.Dance(dance_id)\n'
-            f'    sleep(duration)\n'
-            f'    client.Dance(DanceId.kStop)\n'
-            f'    sleep(0.5)\n'
-            f'\n'
-            f'# Whole Body Dance IDs (pass as dance_id argument to _whole_body_dance):\n'
-            f'#   WholeBodyDanceId.kArbicDance      \u2014 Arabic dance\n'
-            f'#   WholeBodyDanceId.kMichaelDance1   \u2014 Michael Jackson move 1\n'
-            f'#   WholeBodyDanceId.kMichaelDance2   \u2014 Michael Jackson move 2\n'
-            f'#   WholeBodyDanceId.kMichaelDance3   \u2014 Michael Jackson move 3\n'
-            f'#   WholeBodyDanceId.kMoonWalk        \u2014 Moonwalk\n'
-            f'#   WholeBodyDanceId.kBoxingStyleKick \u2014 Boxing style kick\n'
-            f'#   WholeBodyDanceId.kRoundhouseKick  \u2014 Roundhouse kick\n'
-            f'# Note: robot must remain in kWalking mode \u2014 do NOT call ChangeMode before dance.\n'
-            f'def _whole_body_dance(dance_id=WholeBodyDanceId.kArbicDance, duration=10.0):\n'
-            f'    # Stop and stabilise before dancing (must stay in kWalking mode)\n'
-            f'    for _ in range(10):\n'
-            f'        client.Move(0.0, 0.0, 0.0)\n'
-            f'        sleep(0.1)\n'
-            f'    client.WholeBodyDance(dance_id)\n'
-            f'    sleep(duration)\n'
             f'\n'
             f'# \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n'
             f'# \u26a0  DO NOT EDIT above this line \u2014 auto-generated header\n'
@@ -7155,12 +7092,12 @@ class RobotControlApp(QMainWindow):
             code = code.replace(old_import, new_import)
             with open(SDK_SCRIPT_PY, 'w') as f:
                 f.write(code)
-        # Patch missing warning banner above while True:
         _warning_banner = (
             '# ' + '─' * 55 + '\n'
             '# ⚠  DO NOT EDIT above this line — auto-generated header\n'
             '# ' + '─' * 55 + '\n'
         )
+        # Patch missing warning banner above while True:
         if _warning_banner not in code and 'while True:' in code:
             code = code.replace('while True:\n', _warning_banner + 'while True:\n', 1)
             with open(SDK_SCRIPT_PY, 'w') as f:
@@ -7206,72 +7143,6 @@ class RobotControlApp(QMainWindow):
             )
             insert_before = _warning_banner if _warning_banner in code else 'while True:\n'
             code = code.replace(insert_before, _move_head_fn + insert_before, 1)
-            with open(SDK_SCRIPT_PY, 'w') as f:
-                f.write(code)
-        # Patch missing DanceId / WholeBodyDanceId imports
-        if ('DanceId' not in code or 'WholeBodyDanceId' not in code) and 'booster_robotics_sdk_python' in code:
-            # Build the replacement import block with both IDs
-            old_import = '    B1HandIndex, Position, Orientation, Posture, RobotMode,\n)'
-            new_import = '    B1HandIndex, Position, Orientation, Posture, RobotMode,\n    DanceId, WholeBodyDanceId,\n)'
-            # Also handle the case where DanceId was added but WholeBodyDanceId was not
-            old_import_partial = '    B1HandIndex, Position, Orientation, Posture, RobotMode,\n    DanceId,\n)'
-            if old_import_partial in code:
-                code = code.replace(old_import_partial, new_import)
-            elif old_import in code:
-                code = code.replace(old_import, new_import)
-            with open(SDK_SCRIPT_PY, 'w') as f:
-                f.write(code)
-        # Patch missing _dance helper
-        if 'def _dance(' not in code and 'while True:' in code:
-            _dance_fn = (
-                '# Dance IDs (pass as dance_id argument to _dance):\n'
-                '#   DanceId.kNewYear          \u2014 New Year dance\n'
-                '#   DanceId.kNezha            \u2014 Nezha dance\n'
-                '#   DanceId.kTowardsFuture    \u2014 Towards Future dance\n'
-                '#   DanceId.kDabbingGesture   \u2014 Dabbing gesture\n'
-                '#   DanceId.kUltramanGesture  \u2014 Ultraman gesture\n'
-                '#   DanceId.kRespectGesture   \u2014 Respect gesture\n'
-                '#   DanceId.kCheeringGesture  \u2014 Cheering gesture\n'
-                '#   DanceId.kLuckyCatGesture  \u2014 Lucky Cat gesture\n'
-                '# Note: robot must remain in kWalking mode \u2014 do NOT call ChangeMode before dance.\n'
-                'def _dance(dance_id=DanceId.kNewYear, duration=8.0):\n'
-                '    # Stop and stabilise before dancing (must stay in kWalking mode)\n'
-                '    for _ in range(10):\n'
-                '        client.Move(0.0, 0.0, 0.0)\n'
-                '        sleep(0.1)\n'
-                '    client.Dance(dance_id)\n'
-                '    sleep(duration)\n'
-                '    client.Dance(DanceId.kStop)\n'
-                '    sleep(0.5)\n'
-                '\n'
-            )
-            insert_before = _warning_banner if _warning_banner in code else 'while True:\n'
-            code = code.replace(insert_before, _dance_fn + insert_before, 1)
-            with open(SDK_SCRIPT_PY, 'w') as f:
-                f.write(code)
-        # Patch missing _whole_body_dance helper
-        if 'def _whole_body_dance(' not in code and 'while True:' in code:
-            _wbd_fn = (
-                '# Whole Body Dance IDs (pass as dance_id argument to _whole_body_dance):\n'
-                '#   WholeBodyDanceId.kArbicDance      \u2014 Arabic dance\n'
-                '#   WholeBodyDanceId.kMichaelDance1   \u2014 Michael Jackson move 1\n'
-                '#   WholeBodyDanceId.kMichaelDance2   \u2014 Michael Jackson move 2\n'
-                '#   WholeBodyDanceId.kMichaelDance3   \u2014 Michael Jackson move 3\n'
-                '#   WholeBodyDanceId.kMoonWalk        \u2014 Moonwalk\n'
-                '#   WholeBodyDanceId.kBoxingStyleKick \u2014 Boxing style kick\n'
-                '#   WholeBodyDanceId.kRoundhouseKick  \u2014 Roundhouse kick\n'
-                '# Note: robot must remain in kWalking mode \u2014 do NOT call ChangeMode before dance.\n'
-                'def _whole_body_dance(dance_id=WholeBodyDanceId.kArbicDance, duration=10.0):\n'
-                '    # Stop and stabilise before dancing (must stay in kWalking mode)\n'
-                '    for _ in range(10):\n'
-                '        client.Move(0.0, 0.0, 0.0)\n'
-                '        sleep(0.1)\n'
-                '    client.WholeBodyDance(dance_id)\n'
-                '    sleep(duration)\n'
-                '\n'
-            )
-            insert_before = _warning_banner if _warning_banner in code else 'while True:\n'
-            code = code.replace(insert_before, _wbd_fn + insert_before, 1)
             with open(SDK_SCRIPT_PY, 'w') as f:
                 f.write(code)
         # Patch missing _wave_both_hands helper
@@ -8279,6 +8150,14 @@ class RobotControlApp(QMainWindow):
             except Exception as e:
                 self._log(f"Error reading Gazebo log: {e}")
             return
+
+        self._log("--- SDK script log ---")
+        w = SSHCmdWorker(
+            self.ssh_client,
+            "cat /tmp/booster_sdk.log 2>/dev/null || echo '(no sdk log found)'",
+            "SDK script log",
+        )
+        self._run_worker(w)
 
         self._log("--- Robot control service status ---")
         w = SSHCmdWorker(

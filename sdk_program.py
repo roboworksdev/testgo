@@ -2,7 +2,6 @@
 from booster_robotics_sdk_python import (
     B1LocoClient, ChannelFactory,
     B1HandIndex, Position, Orientation, Posture, RobotMode,
-    DanceId, WholeBodyDanceId,
 )
 from time import sleep
 import signal
@@ -76,50 +75,23 @@ def _wave_both_hands(raise_z=0.20, lower_z=0.05, reps=2):
     client.MoveHandEndEffector(_pr, 1000, B1HandIndex.kRightHand)
     sleep(1.0)
 
-# Dance IDs (pass as dance_id argument to _dance):
-#   DanceId.kNewYear          — New Year dance
-#   DanceId.kNezha            — Nezha dance
-#   DanceId.kTowardsFuture    — Towards Future dance
-#   DanceId.kDabbingGesture   — Dabbing gesture
-#   DanceId.kUltramanGesture  — Ultraman gesture
-#   DanceId.kRespectGesture   — Respect gesture
-#   DanceId.kCheeringGesture  — Cheering gesture
-#   DanceId.kLuckyCatGesture  — Lucky Cat gesture
-# Note: robot must remain in kWalking mode — do NOT call ChangeMode before dance.
-def _dance(dance_id=DanceId.kNewYear, duration=8.0):
-    # Stop and stabilise before dancing (must stay in kWalking mode)
-    for _ in range(10):
-        client.Move(0.0, 0.0, 0.0)
-        sleep(0.1)
-    client.Dance(dance_id)
-    sleep(duration)
-    client.Dance(DanceId.kStop)
-    sleep(0.5)
-
-# Whole Body Dance IDs (pass as dance_id argument to _whole_body_dance):
-#   WholeBodyDanceId.kArbicDance      — Arabic dance
-#   WholeBodyDanceId.kMichaelDance1   — Michael Jackson move 1
-#   WholeBodyDanceId.kMichaelDance2   — Michael Jackson move 2
-#   WholeBodyDanceId.kMichaelDance3   — Michael Jackson move 3
-#   WholeBodyDanceId.kMoonWalk        — Moonwalk
-#   WholeBodyDanceId.kBoxingStyleKick — Boxing style kick
-#   WholeBodyDanceId.kRoundhouseKick  — Roundhouse kick
-# Note: robot must remain in kWalking mode — do NOT call ChangeMode before dance.
-def _whole_body_dance(dance_id=WholeBodyDanceId.kArbicDance, duration=10.0):
-    # Stop and stabilise before dancing (must stay in kWalking mode)
-    for _ in range(10):
-        client.Move(0.0, 0.0, 0.0)
-        sleep(0.1)
-    client.WholeBodyDance(dance_id)
-    sleep(duration)
-
 # ───────────────────────────────────────────────────────
 # ⚠  DO NOT EDIT above this line — auto-generated header
 # ───────────────────────────────────────────────────────
 while True:
     pass  # ← drag a function here
-    # dance — robot must be in kWalking mode (default on startup)
-    # kNewYear / kNezha / kTowardsFuture / kDabbingGesture /
+    # head up
+    _move_head(pitch=-0.3, hold=1.5)
+    # head down
+    _move_head(pitch=1.0, hold=1.5)
+    # head rotate clockwise (right)
+    _move_head(yaw=-0.785, hold=1.5)
+    # head rotate anti-clockwise (left)
+    _move_head(yaw=0.785, hold=1.5)
+    # wave left hand
+    _wave_hand(B1HandIndex.kLeftHand, raise_z=0.20, lower_z=0.05, reps=2)
+    # wave right hand
+    _wave_hand(B1HandIndex.kRightHand, raise_z=0.20, lower_z=0.05, reps=2)
     # walk forward for 2.0s
     for _ in range(20):
         client.Move(0.8, 0.0, 0.0)
@@ -127,10 +99,30 @@ while True:
     for _ in range(10):  # decelerate
         client.Move(0.0, 0.0, 0.0)
         sleep(0.1)
-    # whole body dance — robot must be in kWalking mode (default on startup)
-    # kUltramanGesture / kRespectGesture / kCheeringGesture / kLuckyCatGesture
-    _dance(DanceId.kNewYear)
-    # change WholeBodyDanceId to try a different dance:
-    # kArbicDance / kMichaelDance1 / kMichaelDance2 / kMichaelDance3 /
-    # kMoonWalk / kBoxingStyleKick / kRoundhouseKick
-    _whole_body_dance(WholeBodyDanceId.kArbicDance)
+    # walk backward for 2.0s
+    for _ in range(20):
+        client.Move(-0.2, 0.0, 0.0)
+        sleep(0.1)
+    for _ in range(10):  # decelerate
+        client.Move(0.0, 0.0, 0.0)
+        sleep(0.1)
+    # rotate clockwise for 2.0s
+    for _ in range(20):
+        client.Move(0.0, 0.0, -0.2)
+        sleep(0.1)
+    for _ in range(10):  # decelerate
+        client.Move(0.0, 0.0, 0.0)
+        sleep(0.1)
+    # rotate anti-clockwise for 2.0s
+    for _ in range(20):
+        client.Move(0.0, 0.0, 0.3)
+        sleep(0.1)
+    for _ in range(10):  # decelerate
+        client.Move(0.0, 0.0, 0.0)
+        sleep(0.1)
+    # wave both hands simultaneously
+    _wave_both_hands(raise_z=0.20, lower_z=0.05, reps=2)
+    # stop robot for 2.0s
+    for _ in range(20):
+        client.Move(0.0, 0.0, 0.0)
+        sleep(0.1)
