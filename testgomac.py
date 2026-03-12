@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PyQt6 macOS app for Wheeltec robot parameter control and deployment."""
+"""PyQt6 macOS app for Booster K1 robot parameter control and deployment."""
 
 import sys
 import os
@@ -43,7 +43,7 @@ _PKG_DIR = os.path.dirname(os.path.abspath(__file__))
 MOVEMENT_PY = os.path.join(_PKG_DIR, "movement_pkg", "testgo.py")
 PROFILES_FILE = os.path.join(_PKG_DIR, ".robot_profiles.json")
 DEFAULT_IP = "192.168.10.102"
-REMOTE_MOVEMENT_PY = "~/wheeltec_ws/src/project1/movement_pkg/movement_pkg/testgo.py"
+REMOTE_MOVEMENT_PY = "~/booster_ws/src/project1/movement_pkg/movement_pkg/testgo.py"
 SDK_SCRIPT_PY = os.path.join(_PKG_DIR, "sdk_program.py")
 REMOTE_SDK_SCRIPT = "~/booster_program.py"
 _CANVAS_STATE_FILE = os.path.join(_PKG_DIR, ".node_canvas.json")
@@ -52,7 +52,7 @@ _GIT_CREDS_FILE    = os.path.join(_PKG_DIR, ".git_credentials.json")
 # Default canvas items that cannot be deleted
 _PROTECTED_PACKAGE = "movement_pkg"
 _PROTECTED_NODES = {"movement"}
-_PROTECTED_TOPICS = {"/cmd_vel", "/scan"}
+_PROTECTED_TOPICS = {"/low_state", "test_control"}
 
 
 # Source ROS2 base setup — auto-detects the distro from /opt/ros/
@@ -63,7 +63,7 @@ ROS_SOURCE_CMD = (
 
 REMOTE_BUILD_CMD = (
     ROS_SOURCE_CMD + " && "
-    "cd ~/wheeltec_ws && "
+    "cd ~/booster_ws && "
     "colcon build --packages-select movement_pkg"
 )
 
@@ -396,12 +396,9 @@ class BoosterStartWorker(QThread):
 
     def run(self):
         # Kill only non-robot-base ROS2 processes.
-        # All nodes launched by turn_on_wheeltec_robot (wheeltec_robot_node,
-        # lslidar_driver_node, imu_filter_madgwick, ekf_filter_node,
-        # robot_state_publisher, joint_state_publisher) are intentionally left alive:
-        # if the hardware driver is already healthy we reuse the whole group;
-        # killing robot_state_publisher but not relaunching robot_base would leave
-        # the base_link→lidar_link TF unpublished, making the model split apart in RViz.
+        # The Booster K1 robot base nodes (robot_state_publisher, joint_state_publisher,
+        # locomotion_controller) are intentionally left alive:
+        # if the hardware driver is already healthy we reuse the whole group.
         self.log.emit("Cleaning up stale ROS2 processes...")
         self.log.emit("Starting robot control service...")
         try:
@@ -3073,16 +3070,16 @@ class CanvasState:
         }
         node = CanvasItem("node_1", "node", "movement", 400, 250,
                           "movement_pkg")
-        topic_pub = CanvasItem("topic_2", "topic", "/cmd_vel", 650, 250,
+        topic_sub = CanvasItem("topic_2", "topic", "/low_state", 150, 250,
                                "movement_pkg")
-        topic_sub = CanvasItem("topic_3", "topic", "/scan", 150, 250,
+        topic_pub = CanvasItem("topic_3", "topic", "test_control", 650, 250,
                                "movement_pkg")
         state.items = {
-            "node_1": node, "topic_2": topic_pub, "topic_3": topic_sub,
+            "node_1": node, "topic_2": topic_sub, "topic_3": topic_pub,
         }
         state.connections = [
-            CanvasConnection("conn_1", "node_1", "topic_2", "publishes"),
-            CanvasConnection("conn_2", "topic_3", "node_1", "subscribes"),
+            CanvasConnection("conn_1", "topic_2", "node_1", "subscribes"),
+            CanvasConnection("conn_2", "node_1", "topic_3", "publishes"),
         ]
         state._next_id = 4
         return state
@@ -4141,7 +4138,7 @@ class RobotControlApp(QMainWindow):
         header_row.addWidget(self.support_btn)
 
         header_row.addStretch()
-        self.rviz_btn = QPushButton("RViz")
+        self.rviz_btn = QPushButton("Visualise")
         self.rviz_btn.setFixedWidth(90)
         self.rviz_btn.setStyleSheet(
             "background-color: #5856D6; color: white; padding: 8px; "
@@ -4151,7 +4148,7 @@ class RobotControlApp(QMainWindow):
         self.rviz_btn.clicked.connect(self._launch_rviz)
         header_row.addWidget(self.rviz_btn)
 
-        self.gazebo_btn = QPushButton("MuJoCo")
+        self.gazebo_btn = QPushButton("Simulate")
         self.gazebo_btn.setFixedWidth(90)
         self.gazebo_btn.setStyleSheet(
             "background-color: #34C759; color: white; padding: 8px; "
@@ -4197,7 +4194,7 @@ class RobotControlApp(QMainWindow):
         conn_layout.addWidget(self.profile_combo, 0, 2)
 
         conn_layout.addWidget(QLabel("Username:"), 1, 0)
-        self.user_input = QLineEdit("wheeltec")
+        self.user_input = QLineEdit("booster")
         conn_layout.addWidget(self.user_input, 1, 1)
 
         conn_layout.addWidget(QLabel("Password:"), 2, 0)
@@ -8051,14 +8048,14 @@ class RobotControlApp(QMainWindow):
             "pkill -9 -f 'movement_pkg/movement' ; "
             "sleep 0.5 ; "
             + ROS_SOURCE_CMD +
-            " && source ~/wheeltec_ros2/install/setup.bash && "
+            " && source ~/booster_ws/install/setup.bash && "
             "python3 -c \""
             "import rclpy, time; "
-            "from geometry_msgs.msg import Twist; "
+            "from booster_interface.msg import LowCmd; "
             "rclpy.init(); "
             "n = rclpy.create_node('_pause_stop'); "
-            "p = n.create_publisher(Twist, '/cmd_vel', 10); "
-            "t = Twist(); "
+            "p = n.create_publisher(LowCmd, 'test_control', 10); "
+            "t = LowCmd(); "
             "time.sleep(2); "
             "end = time.time() + 3; "
             "[p.publish(t) or time.sleep(0.05) for _ in iter(lambda: time.time() < end, False)]; "
@@ -8101,15 +8098,15 @@ class RobotControlApp(QMainWindow):
         cmd = (
             ROS_SOURCE_CMD + " && "
             "ros2 topic list 2>&1 && "
-            "echo '--- Checking /tf rate ---' && "
-            "timeout 4 ros2 topic hz /tf 2>&1 | head -5 ; "
-            "echo '--- Checking /odom rate ---' && "
-            "timeout 4 ros2 topic hz /odom 2>&1 | head -5"
+            "echo '--- Checking /low_state rate ---' && "
+            "timeout 4 ros2 topic hz /low_state 2>&1 | head -5 ; "
+            "echo '--- Checking test_control rate ---' && "
+            "timeout 4 ros2 topic hz test_control 2>&1 | head -5"
         )
         w = SSHCmdWorker(
             self.ssh_client,
             cmd,
-            "ROS2 topic list + TF/odom check",
+            "ROS2 topic list + low_state/test_control check",
         )
         self._run_worker(w)
 
@@ -8298,7 +8295,7 @@ class RobotControlApp(QMainWindow):
     def _setup_ament_package_for_rviz(self, env):
         """Create a minimal ament index entry so RViz resolves package://movement_pkg/meshes/*.
 
-        The robot's URDF references meshes as package://movement_pkg/meshes/...
+        The K1 URDF references meshes as package://movement_pkg/meshes/...
         RViz2 uses ament_index_cpp to look them up.  We create a fake ament
         prefix under _PKG_DIR/.ament_index/ with the required marker file and
         a symlink to the real meshes directory, then prepend it to AMENT_PREFIX_PATH.
@@ -8565,13 +8562,13 @@ Window Geometry:
             self._log(f"  DDS: FastDDS (matched robot)  robot={robot_ip}  mac={mac_ip or 'unknown'}  domain={robot_domain}")
 
         # Register movement_pkg as a fake ament package so RViz can resolve
-        # package://movement_pkg/meshes/*.STL → _PKG_DIR/meshes/*.STL
+        # package://movement_pkg/meshes/*.STL → _PKG_DIR/meshes/*.STL (K1 URDF mesh paths)
         self._setup_ament_package_for_rviz(env)
 
         # Build command — use separate configs for Gazebo vs real robot.
         # For real robot: generate the config dynamically so we can embed the
         # absolute path to our local Gazebo URDF as the robot model source.
-        # This avoids (a) the Wheeltec mesh-not-found grey-box problem and
+        # This avoids (a) the K1 mesh-not-found grey-box problem and
         # (b) showing two models when two robot_state_publishers are running.
         if robot_ip == "127.0.0.1":
             rviz_config = os.path.join(_PKG_DIR, "default_view.rviz")
@@ -8602,7 +8599,7 @@ Window Geometry:
             # 2 s: capture live /tf frames to see if odom_combined is flowing
             if robot_ip != "127.0.0.1":
                 QTimer.singleShot(2000, lambda: self._check_local_tf_stream(env))
-            # Real-robot only: run diagnostics (e.g. read Wheeltec URDF laser joint)
+            # Real-robot only: run diagnostics (e.g. read K1 TF static frames)
             if robot_ip != "127.0.0.1":
                 self._start_real_robot_rviz_helpers(env, conda_bin)
         except FileNotFoundError:
@@ -8659,7 +8656,7 @@ Window Geometry:
             _, out, _ = self.ssh_client.exec_command(diag_cmd, timeout=12)
             result = out.read().decode(errors="replace").strip()
             if result:
-                self._log("--- Wheeltec laser TF (from /tf_static) ---")
+                self._log("--- K1 TF (from /tf_static) ---")
                 for line in result.splitlines():
                     self._log(f"  {line}")
             else:

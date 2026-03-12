@@ -25,7 +25,7 @@
     {
       "item_id": "topic_2",
       "item_type": "topic",
-      "name": "/cmd_vel",
+      "name": "/low_state",
       "x": 112.0,
       "y": 137.0,
       "package": "movement_pkg",
@@ -35,7 +35,7 @@
     {
       "item_id": "topic_3",
       "item_type": "topic",
-      "name": "/scan",
+      "name": "test_control",
       "x": 714.8359375,
       "y": 160.93359375,
       "package": "movement_pkg",
@@ -100,14 +100,14 @@
   "connections": [
     {
       "conn_id": "conn_2",
-      "source_id": "topic_3",
+      "source_id": "topic_2",
       "target_id": "node_1",
       "conn_type": "subscribes"
     },
     {
       "conn_id": "conn_19",
       "source_id": "node_1",
-      "target_id": "topic_2",
+      "target_id": "topic_3",
       "conn_type": "publishes"
     }
   ]

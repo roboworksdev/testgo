@@ -89,9 +89,9 @@ while True:
     # head rotate anti-clockwise (left)
     _move_head(yaw=0.785, hold=1.5)
     # wave left hand
-    _wave_hand(B1HandIndex.kLeftHand, raise_z=0.20, lower_z=0.05, reps=2)
+    _wave_hand(B1HandIndex.kLeftHand, raise_z=0.80, lower_z=0.00, reps=3)
     # wave right hand
-    _wave_hand(B1HandIndex.kRightHand, raise_z=0.20, lower_z=0.05, reps=2)
+    _wave_hand(B1HandIndex.kRightHand, raise_z=0.80, lower_z=0.00, reps=3)
     # walk forward for 2.0s
     for _ in range(20):
         client.Move(0.8, 0.0, 0.0)
@@ -101,14 +101,14 @@ while True:
         sleep(0.1)
     # walk backward for 2.0s
     for _ in range(20):
-        client.Move(-0.2, 0.0, 0.0)
+        client.Move(-0.8, 0.0, 0.0)
         sleep(0.1)
     for _ in range(10):  # decelerate
         client.Move(0.0, 0.0, 0.0)
         sleep(0.1)
     # rotate clockwise for 2.0s
     for _ in range(20):
-        client.Move(0.0, 0.0, -0.2)
+        client.Move(0.0, 0.0, -0.3)
         sleep(0.1)
     for _ in range(10):  # decelerate
         client.Move(0.0, 0.0, 0.0)
@@ -121,8 +121,4 @@ while True:
         client.Move(0.0, 0.0, 0.0)
         sleep(0.1)
     # wave both hands simultaneously
-    _wave_both_hands(raise_z=0.20, lower_z=0.05, reps=2)
-    # stop robot for 2.0s
-    for _ in range(20):
-        client.Move(0.0, 0.0, 0.0)
-        sleep(0.1)
+    _wave_both_hands(raise_z=1.50, lower_z=0.05, reps=3)
