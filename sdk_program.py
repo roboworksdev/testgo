@@ -82,14 +82,14 @@ while True:
     pass  # ← drag a function here
     # head up
     _move_head(pitch=-0.3, hold=1.5)
-    # head down
-    _move_head(pitch=1.0, hold=1.5)
     # head rotate clockwise (right)
     _move_head(yaw=-0.785, hold=1.5)
-    # head rotate anti-clockwise (left)
-    _move_head(yaw=0.785, hold=1.5)
+    # head down
+    _move_head(pitch=1.0, hold=1.5)
     # wave left hand
     _wave_hand(B1HandIndex.kLeftHand, raise_z=0.80, lower_z=0.00, reps=3)
+    # head rotate anti-clockwise (left)
+    _move_head(yaw=0.785, hold=1.5)
     # wave right hand
     _wave_hand(B1HandIndex.kRightHand, raise_z=0.80, lower_z=0.00, reps=3)
     # walk forward for 2.0s

@@ -2292,12 +2292,12 @@ class _DropIndicator(QWidget):
     end, drawn via QPainter for maximum visibility on any background.
     """
     _COLOR = QColor("#3395FF")
-    _R     = 4    # end-circle radius
-    _LW    = 2.4  # line width
+    _R     = 4.8  # end-circle radius (20% thicker)
+    _LW    = 2.88 # line width (20% thicker)
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedHeight(self._R * 2 + 2)
+        self.setFixedHeight(round(self._R * 2 + 2))
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
         self.hide()
@@ -2306,7 +2306,7 @@ class _DropIndicator(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         cy = self.height() // 2
-        r  = self._R
+        r  = round(self._R)
         # line
         pen = QPen(self._COLOR, self._LW)
         p.setPen(pen)
@@ -2337,7 +2337,7 @@ class CodeBlockWidget(QFrame):
                     " border-radius: 4px; background: transparent; }")
     _OUTER_HOVER = ("CodeBlockWidget { border: 2px solid #E7E7E7;"
                     " border-radius: 4px; background: transparent; }")
-    _OUTER_DRAG  = ("CodeBlockWidget { border: 3px solid #409BFF;"
+    _OUTER_DRAG  = ("CodeBlockWidget { border: 4px solid #409BFF;"
                     " border-radius: 4px; background: transparent; }")
 
     def __init__(self, code: str, parent=None):
