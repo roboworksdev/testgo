@@ -128,46 +128,46 @@ _SIMPLE_VIEW_SNIPPETS = {
     "walk_forward": (
         "    # walk forward for 2.0s\n"
         "    for _ in range(20):\n"
-        "        client.Move(0.8, 0.0, 0.0)\n"
+        "        client.Move(0.5, 0.0, 0.0)\n"
         "        sleep(0.1)\n"
-        "    for _ in range(10):  # decelerate\n"
-        "        client.Move(0.0, 0.0, 0.0)\n"
-        "        sleep(0.1)\n"
+        "    try: client.Move(0.0, 0.0, 0.0)\n"
+        "    except RuntimeError: pass\n"
+        "    sleep(2.0)  # decelerate\n"
     ),
     "walk_backward": (
         "    # walk backward for 2.0s\n"
         "    for _ in range(20):\n"
-        "        client.Move(-0.2, 0.0, 0.0)\n"
+        "        client.Move(-0.5, 0.0, 0.0)\n"
         "        sleep(0.1)\n"
-        "    for _ in range(10):  # decelerate\n"
-        "        client.Move(0.0, 0.0, 0.0)\n"
-        "        sleep(0.1)\n"
+        "    try: client.Move(0.0, 0.0, 0.0)\n"
+        "    except RuntimeError: pass\n"
+        "    sleep(2.0)  # decelerate\n"
     ),
     "body_rotate_cw": (
         "    # rotate clockwise for 2.0s\n"
         "    for _ in range(20):\n"
-        "        client.Move(0.0, 0.0, -0.2)\n"
+        "        client.Move(0.0, 0.0, -0.5)\n"
         "        sleep(0.1)\n"
-        "    for _ in range(10):  # decelerate\n"
-        "        client.Move(0.0, 0.0, 0.0)\n"
-        "        sleep(0.1)\n"
+        "    try: client.Move(0.0, 0.0, 0.0)\n"
+        "    except RuntimeError: pass\n"
+        "    sleep(2.0)  # decelerate\n"
     ),
     "body_rotate_acw": (
         "    # rotate anti-clockwise for 2.0s\n"
         "    for _ in range(20):\n"
-        "        client.Move(0.0, 0.0, 0.3)\n"
+        "        client.Move(0.0, 0.0, 0.5)\n"
         "        sleep(0.1)\n"
-        "    for _ in range(10):  # decelerate\n"
-        "        client.Move(0.0, 0.0, 0.0)\n"
-        "        sleep(0.1)\n"
+        "    try: client.Move(0.0, 0.0, 0.0)\n"
+        "    except RuntimeError: pass\n"
+        "    sleep(2.0)  # decelerate\n"
     ),
     "wave_left_hand": (
         "    # wave left hand\n"
-        "    _wave_hand(B1HandIndex.kLeftHand, raise_z=0.20, lower_z=0.05, reps=2)\n"
+        "    _wave_hand(HandIndex.kLeftHand, raise_z=0.20, lower_z=0.05, reps=2)\n"
     ),
     "wave_right_hand": (
         "    # wave right hand\n"
-        "    _wave_hand(B1HandIndex.kRightHand, raise_z=0.20, lower_z=0.05, reps=2)\n"
+        "    _wave_hand(HandIndex.kRightHand, raise_z=0.20, lower_z=0.05, reps=2)\n"
     ),
     "wave_both_hands": (
         "    # wave both hands simultaneously\n"
@@ -214,8 +214,12 @@ class ConnectWorker(QThread):
                            password=self.password, timeout=10)
             self.log.emit("Connected successfully.")
             self.connected.emit(client)
+        except paramiko.AuthenticationException as e:
+            self.failed.emit(f"Authentication failed (wrong username/password): {e}")
+        except paramiko.SSHException as e:
+            self.failed.emit(f"SSH error: {e}")
         except Exception as e:
-            self.failed.emit(str(e))
+            self.failed.emit(f"{type(e).__name__}: {e}")
 
 
 class DeployWorker(QThread):
@@ -2608,9 +2612,32 @@ class BlockEditorWidget(QWidget):
             self._append_block(blk, emit=False)
 
     def _parse_blocks(self, body_lines: list) -> list:
+        """Parse while-True body lines into individual block strings.
+
+        Handles two on-disk formats:
+          • Legacy: blocks delimited by 4-space comment lines (^    #)
+          • Current: each block wrapped in ``    try: … except RuntimeError:``
+        """
         blocks, current = [], []
+        in_try = False
         for line in body_lines:
-            if re.match(r"^    #", line) and current:
+            if not in_try and re.match(r"^    try:\s*$", line):
+                # start of a try-wrapped user block
+                in_try = True
+                current = []
+            elif in_try and re.match(r"^    except RuntimeError:", line):
+                # end of wrapped block — strip the 4-space try-indent and save
+                if current and "\n".join(current).strip():
+                    stripped = "\n".join(
+                        l[4:] if l[:4] == '    ' else l for l in current
+                    )
+                    blocks.append(stripped.rstrip())
+                current = []
+                in_try = False
+            elif in_try:
+                current.append(line)
+            elif re.match(r"^    #", line) and current:
+                # legacy format: new block starts at each 4-space comment
                 if "\n".join(current).strip():
                     blocks.append("\n".join(current).rstrip())
                 current = [line]
@@ -2622,10 +2649,47 @@ class BlockEditorWidget(QWidget):
 
     def toPlainText(self) -> str:
         parts = [self._header.toPlainText(),
-                 "    pass  # \u2190 drag a function here"]
+                 "    pass  # \u2190 drag a function here",
+                 "    # keep robot in walking mode\n"
+                 "    try:\n"
+                 "        if 'kWalking' not in str(client.GetStatus().current_mode):\n"
+                 "            client.ChangeMode(RobotMode.kWalking); sleep(3.0)\n"
+                 "    except Exception:\n"
+                 "        pass"]
+        _old_decel = (
+            "    for _ in range(10):  # decelerate\n"
+            "        client.Move(0.0, 0.0, 0.0)\n"
+            "        sleep(0.1)\n"
+        )
+        _new_decel = (
+            "    try: client.Move(0.0, 0.0, 0.0)\n"
+            "    except RuntimeError: pass\n"
+            "    sleep(2.0)  # decelerate\n"
+        )
         for b in self._blocks:
             c = b.code().rstrip()
-            if c: parts.append(c)
+            # migrate old decelerate loop
+            c = c.replace(_old_decel.rstrip(), _new_decel.rstrip())
+            # migrate plain sleep(1.0) decelerate
+            c = c.replace(
+                "    sleep(1.0)  # decelerate",
+                _new_decel.rstrip()
+            )
+            # migrate old movement speeds
+            c = c.replace("client.Move(0.8, 0.0, 0.0)", "client.Move(0.5, 0.0, 0.0)")
+            c = c.replace("client.Move(0.3, 0.0, 0.0)", "client.Move(0.5, 0.0, 0.0)")
+            c = c.replace("client.Move(-0.2, 0.0, 0.0)", "client.Move(-0.5, 0.0, 0.0)")
+            c = c.replace("client.Move(0.0, 0.0, -0.2)", "client.Move(0.0, 0.0, -0.5)")
+            c = c.replace("client.Move(0.0, 0.0, 0.3)", "client.Move(0.0, 0.0, 0.5)")
+            if c:
+                # wrap each block in try/except so a failed Move doesn't crash the loop
+                inner = "\n".join(
+                    ("    " + l) if l.strip() else l for l in c.split("\n")
+                )
+                parts.append(
+                    "    try:\n" + inner +
+                    "\n    except RuntimeError: sleep(1.0)"
+                )
         return "\n".join(parts) + "\n"
 
     # ── block management ───────────────────────────────────────────────────
@@ -4332,7 +4396,7 @@ class RobotControlApp(QMainWindow):
         param_layout.addWidget(_btn_container, 4, 0, 1, 4)
 
         param_group.setLayout(param_layout)
-        layout.addWidget(param_group)
+        self._param_group = param_group  # keep alive (not shown, but spinboxes still referenced)
 
         # --- Robot control group ---
         control_group = QGroupBox("Robot Control")
@@ -4382,7 +4446,7 @@ class RobotControlApp(QMainWindow):
         self.log_area.setMinimumHeight(225)
         log_layout.addWidget(self.log_area)
         log_group.setLayout(log_layout)
-        layout.addWidget(log_group)
+        layout.addWidget(log_group, 1)
 
         self.tabs.addTab(tab, "Robot Control")
 
@@ -5500,6 +5564,13 @@ class RobotControlApp(QMainWindow):
         self.font_larger_btn.clicked.connect(self._increase_font_size)
         top_bar.addWidget(self.font_larger_btn)
 
+        # Raw code block button — same size as big A, right next to it
+        self.sv_raw_block_btn = QPushButton("{ }")
+        self.sv_raw_block_btn.setToolTip("Add a free-form code block (type any Python directly into the loop)")
+        self.sv_raw_block_btn.setStyleSheet(_large_a_style)
+        self.sv_raw_block_btn.clicked.connect(self._add_raw_code_block)
+        top_bar.addWidget(self.sv_raw_block_btn)
+
         # Full View: search button — drawn magnifier icon (matches AI Agent popup)
         self.fv_search_btn = QPushButton()
         self.fv_search_btn.setFixedSize(36, 36)
@@ -5558,6 +5629,9 @@ class RobotControlApp(QMainWindow):
         self.editor_deploy_btn.setEnabled(False)
         self.editor_deploy_btn.clicked.connect(self._deploy_from_editor)
         top_bar.addWidget(self.editor_deploy_btn)
+        # Hidden in Simple View; shown when switching to Full/Expert View
+        self.editor_save_btn.hide()
+        self.editor_deploy_btn.hide()
 
         # AI button — Expert View only (hidden until _show_full_view is called)
         self.fv_ai_btn = QPushButton()
@@ -6735,14 +6809,29 @@ class RobotControlApp(QMainWindow):
 
     # --- Simple View helpers ---
 
+    def _add_raw_code_block(self):
+        """Append a free-form editable code block into the while-loop body."""
+        placeholder = "    # write your code here\n    pass"
+        self.simple_editor._append_block(placeholder)
+        # Scroll the editor to the bottom so the new block is visible
+        try:
+            sb = self.simple_editor._scroll.verticalScrollBar()
+            sb.setValue(sb.maximum())
+        except Exception:
+            pass
+
     def _generate_simple_code(self):
         """Generate standalone Booster SDK Python script."""
         return (
             f'# TestGo SDK v6\n'
             f'from booster_robotics_sdk_python import (\n'
             f'    B1LocoClient, ChannelFactory,\n'
-            f'    B1HandIndex, Position, Orientation, Posture, RobotMode,\n'
+            f'    Position, Orientation, Posture, RobotMode,\n'
             f')\n'
+            f'try:\n'
+            f'    from booster_robotics_sdk_python import B1HandIndex as HandIndex  # older SDK\n'
+            f'except ImportError:\n'
+            f'    from booster_robotics_sdk_python import HandIndex  # newer SDK\n'
             f'from time import sleep\n'
             f'import signal\n'
             f'\n'
@@ -6750,10 +6839,19 @@ class RobotControlApp(QMainWindow):
             f'client = B1LocoClient()\n'
             f'client.Init()\n'
             f'sleep(1.0)\n'
+            f'# Ensure robot is in walking mode before sending commands\n'
+            f'try:\n'
+            f'    _st = client.GetStatus()\n'
+            f'    if str(_st.current_mode) != "RobotMode.kWalking":\n'
+            f'        client.ChangeMode(RobotMode.kWalking)\n'
+            f'        sleep(3.0)\n'
+            f'except Exception:\n'
+            f'    pass\n'
             f'\n'
             f'def _on_stop(sig, frame):\n'
             f'    for _ in range(5):\n'
-            f'        client.Move(0.0, 0.0, 0.0)\n'
+            f'        try: client.Move(0.0, 0.0, 0.0)\n'
+            f'        except Exception: pass\n'
             f'        sleep(0.2)\n'
             f'    raise SystemExit(0)\n'
             f'\n'
@@ -6761,7 +6859,7 @@ class RobotControlApp(QMainWindow):
             f'signal.signal(signal.SIGINT, _on_stop)\n'
             f'\n'
             f'def _wave_hand(hand, raise_z=0.20, lower_z=0.05, reps=2):\n'
-            f'    s = 1 if hand == B1HandIndex.kLeftHand else -1\n'
+            f'    s = 1 if hand == HandIndex.kLeftHand else -1\n'
             f'    for _ in range(10):\n'
             f'        client.Move(0.0, 0.0, 0.0)\n'
             f'        sleep(0.1)\n'
@@ -6795,24 +6893,24 @@ class RobotControlApp(QMainWindow):
             f'    _pr = Posture(); _pr.orientation = Orientation(0.0, 0.0, 0.0)\n'
             f'    _pl.position = Position(0.25,  0.30, raise_z)\n'
             f'    _pr.position = Position(0.25, -0.30, raise_z)\n'
-            f'    client.MoveHandEndEffector(_pl, 1000, B1HandIndex.kLeftHand)\n'
-            f'    client.MoveHandEndEffector(_pr, 1000, B1HandIndex.kRightHand)\n'
+            f'    client.MoveHandEndEffector(_pl, 1000, HandIndex.kLeftHand)\n'
+            f'    client.MoveHandEndEffector(_pr, 1000, HandIndex.kRightHand)\n'
             f'    sleep(1.0)\n'
             f'    for _ in range(reps):\n'
             f'        _pl.position = Position(0.25,  0.38, raise_z)\n'
             f'        _pr.position = Position(0.25, -0.38, raise_z)\n'
-            f'        client.MoveHandEndEffector(_pl, 500, B1HandIndex.kLeftHand)\n'
-            f'        client.MoveHandEndEffector(_pr, 500, B1HandIndex.kRightHand)\n'
+            f'        client.MoveHandEndEffector(_pl, 500, HandIndex.kLeftHand)\n'
+            f'        client.MoveHandEndEffector(_pr, 500, HandIndex.kRightHand)\n'
             f'        sleep(0.5)\n'
             f'        _pl.position = Position(0.25,  0.22, raise_z)\n'
             f'        _pr.position = Position(0.25, -0.22, raise_z)\n'
-            f'        client.MoveHandEndEffector(_pl, 500, B1HandIndex.kLeftHand)\n'
-            f'        client.MoveHandEndEffector(_pr, 500, B1HandIndex.kRightHand)\n'
+            f'        client.MoveHandEndEffector(_pl, 500, HandIndex.kLeftHand)\n'
+            f'        client.MoveHandEndEffector(_pr, 500, HandIndex.kRightHand)\n'
             f'        sleep(0.5)\n'
             f'    _pl.position = Position(0.28,  0.25, lower_z)\n'
             f'    _pr.position = Position(0.28, -0.25, lower_z)\n'
-            f'    client.MoveHandEndEffector(_pl, 1000, B1HandIndex.kLeftHand)\n'
-            f'    client.MoveHandEndEffector(_pr, 1000, B1HandIndex.kRightHand)\n'
+            f'    client.MoveHandEndEffector(_pl, 1000, HandIndex.kLeftHand)\n'
+            f'    client.MoveHandEndEffector(_pr, 1000, HandIndex.kRightHand)\n'
             f'    sleep(1.0)\n'
             f'\n'
             f'# \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n'
@@ -7082,11 +7180,27 @@ class RobotControlApp(QMainWindow):
             code = self._generate_simple_code()
             with open(SDK_SCRIPT_PY, 'w') as f:
                 f.write(code)
-        # Patch old import: ensure RobotMode is present
-        old_import = '    B1HandIndex, Position, Orientation, Posture,\n'
-        new_import = '    B1HandIndex, Position, Orientation, Posture, RobotMode,\n'
-        if old_import in code:
-            code = code.replace(old_import, new_import)
+        # Patch old import: migrate B1HandIndex → HandIndex compat shim
+        _old_b1_import = (
+            'from booster_robotics_sdk_python import (\n'
+            '    B1LocoClient, ChannelFactory,\n'
+            '    B1HandIndex, Position, Orientation, Posture, RobotMode,\n'
+            ')\n'
+        )
+        _new_b1_import = (
+            'from booster_robotics_sdk_python import (\n'
+            '    B1LocoClient, ChannelFactory,\n'
+            '    Position, Orientation, Posture, RobotMode,\n'
+            ')\n'
+            'try:\n'
+            '    from booster_robotics_sdk_python import B1HandIndex as HandIndex  # older SDK\n'
+            'except ImportError:\n'
+            '    from booster_robotics_sdk_python import HandIndex  # newer SDK\n'
+        )
+        if _old_b1_import in code:
+            code = code.replace(_old_b1_import, _new_b1_import)
+            code = code.replace('B1HandIndex.kLeftHand', 'HandIndex.kLeftHand')
+            code = code.replace('B1HandIndex.kRightHand', 'HandIndex.kRightHand')
             with open(SDK_SCRIPT_PY, 'w') as f:
                 f.write(code)
         _warning_banner = (
@@ -7094,16 +7208,81 @@ class RobotControlApp(QMainWindow):
             '# ⚠  DO NOT EDIT above this line — auto-generated header\n'
             '# ' + '─' * 55 + '\n'
         )
+        # Patch missing kWalking mode check
+        _old_init = 'client.Init()\nsleep(1.0)\n'
+        _new_init = (
+            'client.Init()\n'
+            'sleep(1.0)\n'
+            '# Ensure robot is in walking mode before sending commands\n'
+            'try:\n'
+            '    _st = client.GetStatus()\n'
+            '    if str(_st.current_mode) != "RobotMode.kWalking":\n'
+            '        client.ChangeMode(RobotMode.kWalking)\n'
+            '        sleep(3.0)\n'
+            'except Exception:\n'
+            '    pass\n'
+        )
+        if _old_init in code and 'ChangeMode(RobotMode.kWalking)' not in code:
+            code = code.replace(_old_init, _new_init, 1)
+            with open(SDK_SCRIPT_PY, 'w') as f:
+                f.write(code)
+        # Patch _on_stop to handle RuntimeError from Move(0,0,0)
+        _old_on_stop = (
+            'def _on_stop(sig, frame):\n'
+            '    for _ in range(5):\n'
+            '        client.Move(0.0, 0.0, 0.0)\n'
+            '        sleep(0.2)\n'
+            '    raise SystemExit(0)\n'
+        )
+        _new_on_stop = (
+            'def _on_stop(sig, frame):\n'
+            '    for _ in range(5):\n'
+            '        try: client.Move(0.0, 0.0, 0.0)\n'
+            '        except Exception: pass\n'
+            '        sleep(0.2)\n'
+            '    raise SystemExit(0)\n'
+        )
+        if _old_on_stop in code:
+            code = code.replace(_old_on_stop, _new_on_stop)
+            with open(SDK_SCRIPT_PY, 'w') as f:
+                f.write(code)
         # Patch missing warning banner above while True:
         if _warning_banner not in code and 'while True:' in code:
             code = code.replace('while True:\n', _warning_banner + 'while True:\n', 1)
             with open(SDK_SCRIPT_PY, 'w') as f:
                 f.write(code)
+        # Strip any old per-loop mode check from while True body (it is now hardcoded
+        # in toPlainText so storing it in the file creates a duplicate user block).
+        for _old_loop_check in [
+            "    # keep robot in walking mode\n"
+            "    try:\n"
+            "        if str(client.GetStatus().current_mode) != 'RobotMode.kWalking':\n"
+            "            client.ChangeMode(RobotMode.kWalking); sleep(2.0)\n"
+            "    except Exception:\n"
+            "        pass\n",
+            "    # keep robot in walking mode\n"
+            "    try:\n"
+            "        if str(client.GetStatus().current_mode) != 'RobotMode.kWalking':\n"
+            "            client.ChangeMode(RobotMode.kWalking); sleep(3.0)\n"
+            "    except Exception:\n"
+            "        pass\n",
+            "    # keep robot in walking mode\n"
+            "    try:\n"
+            "        if 'kWalking' not in str(client.GetStatus().current_mode):\n"
+            "            client.ChangeMode(RobotMode.kWalking); sleep(3.0)\n"
+            "    except Exception:\n"
+            "        pass\n",
+        ]:
+            if _old_loop_check in code:
+                code = code.replace(_old_loop_check, '')
+                with open(SDK_SCRIPT_PY, 'w') as f:
+                    f.write(code)
+                break
         # Patch missing _wave_hand helper
         if 'def _wave_hand(' not in code and 'while True:' in code:
             _wave_fn = (
                 'def _wave_hand(hand, raise_z=0.20, lower_z=0.05, reps=2):\n'
-                '    s = 1 if hand == B1HandIndex.kLeftHand else -1\n'
+                '    s = 1 if hand == HandIndex.kLeftHand else -1\n'
                 '    for _ in range(10):\n'
                 '        client.Move(0.0, 0.0, 0.0)\n'
                 '        sleep(0.1)\n'
@@ -7153,24 +7332,24 @@ class RobotControlApp(QMainWindow):
                 '    _pr = Posture(); _pr.orientation = Orientation(0.0, 0.0, 0.0)\n'
                 '    _pl.position = Position(0.25,  0.30, raise_z)\n'
                 '    _pr.position = Position(0.25, -0.30, raise_z)\n'
-                '    client.MoveHandEndEffector(_pl, 1000, B1HandIndex.kLeftHand)\n'
-                '    client.MoveHandEndEffector(_pr, 1000, B1HandIndex.kRightHand)\n'
+                '    client.MoveHandEndEffector(_pl, 1000, HandIndex.kLeftHand)\n'
+                '    client.MoveHandEndEffector(_pr, 1000, HandIndex.kRightHand)\n'
                 '    sleep(1.0)\n'
                 '    for _ in range(reps):\n'
                 '        _pl.position = Position(0.25,  0.38, raise_z)\n'
                 '        _pr.position = Position(0.25, -0.38, raise_z)\n'
-                '        client.MoveHandEndEffector(_pl, 500, B1HandIndex.kLeftHand)\n'
-                '        client.MoveHandEndEffector(_pr, 500, B1HandIndex.kRightHand)\n'
+                '        client.MoveHandEndEffector(_pl, 500, HandIndex.kLeftHand)\n'
+                '        client.MoveHandEndEffector(_pr, 500, HandIndex.kRightHand)\n'
                 '        sleep(0.5)\n'
                 '        _pl.position = Position(0.25,  0.22, raise_z)\n'
                 '        _pr.position = Position(0.25, -0.22, raise_z)\n'
-                '        client.MoveHandEndEffector(_pl, 500, B1HandIndex.kLeftHand)\n'
-                '        client.MoveHandEndEffector(_pr, 500, B1HandIndex.kRightHand)\n'
+                '        client.MoveHandEndEffector(_pl, 500, HandIndex.kLeftHand)\n'
+                '        client.MoveHandEndEffector(_pr, 500, HandIndex.kRightHand)\n'
                 '        sleep(0.5)\n'
                 '    _pl.position = Position(0.28,  0.25, lower_z)\n'
                 '    _pr.position = Position(0.28, -0.25, lower_z)\n'
-                '    client.MoveHandEndEffector(_pl, 1000, B1HandIndex.kLeftHand)\n'
-                '    client.MoveHandEndEffector(_pr, 1000, B1HandIndex.kRightHand)\n'
+                '    client.MoveHandEndEffector(_pl, 1000, HandIndex.kLeftHand)\n'
+                '    client.MoveHandEndEffector(_pr, 1000, HandIndex.kRightHand)\n'
                 '    sleep(1.0)\n'
                 '    tl.start(); tr.start()\n'
                 '    tl.join(); tr.join()\n'
@@ -7278,6 +7457,9 @@ class RobotControlApp(QMainWindow):
         self.fv_delete_btn.hide()
         self.fv_search_btn.hide()
         self.fv_ai_btn.hide()
+        self.editor_save_btn.hide()
+        self.editor_deploy_btn.hide()
+        self.sv_raw_block_btn.show()
         self.sv_run_btn.show()
         self._fv_search_bar.hide()
         self._fv_search_input.clear()
@@ -7292,6 +7474,9 @@ class RobotControlApp(QMainWindow):
         self.full_view_btn.setChecked(True)
         self.simple_view_btn.setChecked(False)
         self.sv_run_btn.hide()
+        self.sv_raw_block_btn.hide()
+        self.editor_save_btn.show()
+        self.editor_deploy_btn.show()
         self.fv_add_btn.show()
         self.fv_delete_btn.show()
         self.fv_search_btn.show()
@@ -7581,6 +7766,9 @@ class RobotControlApp(QMainWindow):
             self._on_connected(None)
             return
 
+        if ip != DEFAULT_IP:
+            self._save_current_profile()
+
         w = ConnectWorker(
             ip,
             self.user_input.text().strip(),
@@ -7605,7 +7793,6 @@ class RobotControlApp(QMainWindow):
         )
         if not is_local:
             self._set_controls_enabled(True)
-            self._save_current_profile()
 
     def _on_connect_failed(self, error):
         self._log(f"Connection failed: {error}")

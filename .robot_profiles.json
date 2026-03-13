@@ -1,26 +1,8 @@
 [
   {
-    "ip": "10.0.0.8",
-    "username": "wheeltec",
-    "password": "dongguan",
-    "name": "Charming Wifi"
-  },
-  {
-    "ip": "192.168.1.153",
-    "username": "wheeltec",
-    "password": "dongguan",
-    "name": "Cremorne Ethernet"
-  },
-  {
-    "ip": "192.168.1.177",
-    "username": "wheeltec",
-    "password": "dongguan",
-    "name": "Cremorne Wifi"
-  },
-  {
-    "ip": "10.0.236.82",
+    "ip": "192.168.1.201",
     "username": "booster",
     "password": "123456",
-    "name": ""
+    "name": "ICTE"
   }
 ]

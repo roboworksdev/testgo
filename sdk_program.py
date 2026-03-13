@@ -1,8 +1,12 @@
 # TestGo SDK v6
 from booster_robotics_sdk_python import (
     B1LocoClient, ChannelFactory,
-    B1HandIndex, Position, Orientation, Posture, RobotMode,
+    Position, Orientation, Posture, RobotMode,
 )
+try:
+    from booster_robotics_sdk_python import B1HandIndex as HandIndex  # older SDK
+except ImportError:
+    from booster_robotics_sdk_python import HandIndex  # newer SDK
 from time import sleep
 import signal
 
@@ -10,10 +14,19 @@ ChannelFactory.Instance().Init(0)
 client = B1LocoClient()
 client.Init()
 sleep(1.0)
+# Ensure robot is in walking mode before sending commands
+try:
+    _st = client.GetStatus()
+    if str(_st.current_mode) != "RobotMode.kWalking":
+        client.ChangeMode(RobotMode.kWalking)
+        sleep(2.0)
+except Exception:
+    pass
 
 def _on_stop(sig, frame):
     for _ in range(5):
-        client.Move(0.0, 0.0, 0.0)
+        try: client.Move(0.0, 0.0, 0.0)
+        except Exception: pass
         sleep(0.2)
     raise SystemExit(0)
 
@@ -21,7 +34,7 @@ signal.signal(signal.SIGTERM, _on_stop)
 signal.signal(signal.SIGINT, _on_stop)
 
 def _wave_hand(hand, raise_z=0.20, lower_z=0.05, reps=2):
-    s = 1 if hand == B1HandIndex.kLeftHand else -1
+    s = 1 if hand == HandIndex.kLeftHand else -1
     for _ in range(10):
         client.Move(0.0, 0.0, 0.0)
         sleep(0.1)
@@ -55,24 +68,24 @@ def _wave_both_hands(raise_z=0.20, lower_z=0.05, reps=2):
     _pr = Posture(); _pr.orientation = Orientation(0.0, 0.0, 0.0)
     _pl.position = Position(0.25,  0.30, raise_z)
     _pr.position = Position(0.25, -0.30, raise_z)
-    client.MoveHandEndEffector(_pl, 1000, B1HandIndex.kLeftHand)
-    client.MoveHandEndEffector(_pr, 1000, B1HandIndex.kRightHand)
+    client.MoveHandEndEffector(_pl, 1000, HandIndex.kLeftHand)
+    client.MoveHandEndEffector(_pr, 1000, HandIndex.kRightHand)
     sleep(1.0)
     for _ in range(reps):
         _pl.position = Position(0.25,  0.38, raise_z)
         _pr.position = Position(0.25, -0.38, raise_z)
-        client.MoveHandEndEffector(_pl, 500, B1HandIndex.kLeftHand)
-        client.MoveHandEndEffector(_pr, 500, B1HandIndex.kRightHand)
+        client.MoveHandEndEffector(_pl, 500, HandIndex.kLeftHand)
+        client.MoveHandEndEffector(_pr, 500, HandIndex.kRightHand)
         sleep(0.5)
         _pl.position = Position(0.25,  0.22, raise_z)
         _pr.position = Position(0.25, -0.22, raise_z)
-        client.MoveHandEndEffector(_pl, 500, B1HandIndex.kLeftHand)
-        client.MoveHandEndEffector(_pr, 500, B1HandIndex.kRightHand)
+        client.MoveHandEndEffector(_pl, 500, HandIndex.kLeftHand)
+        client.MoveHandEndEffector(_pr, 500, HandIndex.kRightHand)
         sleep(0.5)
     _pl.position = Position(0.28,  0.25, lower_z)
     _pr.position = Position(0.28, -0.25, lower_z)
-    client.MoveHandEndEffector(_pl, 1000, B1HandIndex.kLeftHand)
-    client.MoveHandEndEffector(_pr, 1000, B1HandIndex.kRightHand)
+    client.MoveHandEndEffector(_pl, 1000, HandIndex.kLeftHand)
+    client.MoveHandEndEffector(_pr, 1000, HandIndex.kRightHand)
     sleep(1.0)
 
 # ───────────────────────────────────────────────────────
@@ -80,45 +93,79 @@ def _wave_both_hands(raise_z=0.20, lower_z=0.05, reps=2):
 # ───────────────────────────────────────────────────────
 while True:
     pass  # ← drag a function here
-    # head up
-    _move_head(pitch=-0.3, hold=1.5)
-    # head rotate clockwise (right)
-    _move_head(yaw=-0.785, hold=1.5)
-    # head down
-    _move_head(pitch=1.0, hold=1.5)
-    # wave left hand
-    _wave_hand(B1HandIndex.kLeftHand, raise_z=0.80, lower_z=0.00, reps=3)
-    # head rotate anti-clockwise (left)
-    _move_head(yaw=0.785, hold=1.5)
-    # wave right hand
-    _wave_hand(B1HandIndex.kRightHand, raise_z=0.80, lower_z=0.00, reps=3)
-    # walk forward for 2.0s
-    for _ in range(20):
-        client.Move(0.8, 0.0, 0.0)
-        sleep(0.1)
-    for _ in range(10):  # decelerate
-        client.Move(0.0, 0.0, 0.0)
-        sleep(0.1)
-    # walk backward for 2.0s
-    for _ in range(20):
-        client.Move(-0.8, 0.0, 0.0)
-        sleep(0.1)
-    for _ in range(10):  # decelerate
-        client.Move(0.0, 0.0, 0.0)
-        sleep(0.1)
-    # rotate clockwise for 2.0s
-    for _ in range(20):
-        client.Move(0.0, 0.0, -0.3)
-        sleep(0.1)
-    for _ in range(10):  # decelerate
-        client.Move(0.0, 0.0, 0.0)
-        sleep(0.1)
-    # rotate anti-clockwise for 2.0s
-    for _ in range(20):
-        client.Move(0.0, 0.0, 0.3)
-        sleep(0.1)
-    for _ in range(10):  # decelerate
-        client.Move(0.0, 0.0, 0.0)
-        sleep(0.1)
-    # wave both hands simultaneously
-    _wave_both_hands(raise_z=1.50, lower_z=0.05, reps=3)
+    # keep robot in walking mode
+    try:
+        if 'kWalking' not in str(client.GetStatus().current_mode):
+            client.ChangeMode(RobotMode.kWalking); sleep(3.0)
+    except Exception:
+        pass
+    try:
+        # head up
+        _move_head(pitch=-0.3, hold=1.5)
+    except RuntimeError: sleep(1.0)
+    try:
+        # head down
+        _move_head(pitch=1.0, hold=1.5)
+    except RuntimeError: sleep(1.0)
+    try:
+        # head rotate clockwise (right)
+        _move_head(yaw=-0.785, hold=1.5)
+    except RuntimeError: sleep(1.0)
+    try:
+        # head rotate clockwise (right)
+        _move_head(yaw=-0.785, hold=1.5)
+    except RuntimeError: sleep(1.0)
+    try:
+        # wave left hand
+        _wave_hand(HandIndex.kLeftHand, raise_z=0.20, lower_z=0.05, reps=2)
+    except RuntimeError: sleep(1.0)
+    try:
+        # wave right hand
+        _wave_hand(HandIndex.kRightHand, raise_z=0.20, lower_z=0.05, reps=2)
+    except RuntimeError: sleep(1.0)
+    try:
+        # rotate clockwise for 2.0s
+        for _ in range(20):
+            client.Move(0.0, 0.0, -0.5)
+            sleep(0.1)
+        try: client.Move(0.0, 0.0, 0.0)
+        except RuntimeError: pass
+        sleep(2.0)  # decelerate
+    except RuntimeError: sleep(1.0)
+    try:
+        # rotate anti-clockwise for 2.0s
+        for _ in range(20):
+            client.Move(0.0, 0.0, 0.5)
+            sleep(0.1)
+        try: client.Move(0.0, 0.0, 0.0)
+        except RuntimeError: pass
+        sleep(2.0)  # decelerate
+    except RuntimeError: sleep(1.0)
+    try:
+        # wave both hands simultaneously
+        _wave_both_hands(raise_z=0.20, lower_z=0.05, reps=2)
+    except RuntimeError: sleep(1.0)
+    try:
+        # walk forward for 2.0s
+        for _ in range(20):
+            client.Move(0.5, 0.0, 0.0)
+            sleep(0.1)
+        try: client.Move(0.0, 0.0, 0.0)
+        except RuntimeError: pass
+        sleep(2.0)  # decelerate
+    except RuntimeError: sleep(1.0)
+    try:
+        # walk backward for 2.0s
+        for _ in range(20):
+            client.Move(-0.5, 0.0, 0.0)
+            sleep(0.1)
+        try: client.Move(0.0, 0.0, 0.0)
+        except RuntimeError: pass
+        sleep(2.0)  # decelerate
+    except RuntimeError: sleep(1.0)
+    try:
+        # stop robot for 2.0s
+        for _ in range(20):
+            client.Move(0.0, 0.0, 0.0)
+            sleep(0.1)
+    except RuntimeError: sleep(1.0)
